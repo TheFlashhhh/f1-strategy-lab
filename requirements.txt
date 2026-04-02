@@ -1,0 +1,6 @@
+fastf1>=3.0.0
+pandas>=1.5.0
+numpy>=1.23.0
+matplotlib>=3.6.0
+jupyter>=1.0.0
+streamlit>=1.0.0
