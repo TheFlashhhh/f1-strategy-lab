@@ -7,14 +7,47 @@ from typing import Dict, Iterable, Tuple
 import numpy as np
 import pandas as pd
 
+# Import Phase 1B fuel correction (optional; will be used if available)
+try:
+    from src.features.fuel_correction import (
+        apply_fuel_correction,
+        estimate_fuel_effect,
+        evaluate_fuel_correction,
+        print_fuel_correction_summary,
+        save_fuel_correction_summary,
+    )
+    FUEL_CORRECTION_AVAILABLE = True
+except ImportError:
+    FUEL_CORRECTION_AVAILABLE = False
 
-def create_degradation_table(df: pd.DataFrame) -> pd.DataFrame:
+
+def create_degradation_table(df: pd.DataFrame, use_fuel_corrected: bool = False) -> pd.DataFrame:
     """Aggregate lap time by compound and tyre life.
 
     Returns columns: Compound, TyreLife, LapTime (mean), Count.
+
+    Args:
+        df: Model-grade laps with LapTime and optionally FuelCorrectedLapTime.
+        use_fuel_corrected: If True, must have FuelCorrectedLapTime column (raises error if missing).
+                             If False, uses raw LapTime.
+
+    Returns:
+        Aggregated degradation table.
+        
+    Raises:
+        ValueError: If use_fuel_corrected=True but FuelCorrectedLapTime column missing.
     """
+    time_col = "LapTime"
+    if use_fuel_corrected:
+        if "FuelCorrectedLapTime" not in df.columns:
+            raise ValueError(
+                "use_fuel_corrected=True but FuelCorrectedLapTime column not found. "
+                "Ensure apply_fuel_correction() was called before this function."
+            )
+        time_col = "FuelCorrectedLapTime"
+
     out = (
-        df.groupby(["Compound", "TyreLife"])["LapTime"]
+        df.groupby(["Compound", "TyreLife"])[time_col]
         .agg(["mean", "count"])
         .reset_index()
     )

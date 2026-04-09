@@ -2,10 +2,42 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Iterable, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
+
+
+def predict_lap_time(
+    degradation_models: Union[Dict[str, Tuple[float, float]], object],
+    compound: str,
+    tyre_life: int,
+) -> Optional[float]:
+    """Predict lap time for a compound/tyre-life combination.
+    
+    Unified prediction helper that works with both:
+    - Legacy format: Dict[str, Tuple[slope, intercept]] → use linear prediction
+    - New format: DegradationEvaluationResult → use its built-in predict method
+    
+    Args:
+        degradation_models: Either legacy linear dict or DegradationEvaluationResult
+        compound: Compound name (e.g., "MEDIUM")
+        tyre_life: Tyre-life value
+        
+    Returns:
+        Predicted lap time in seconds, or None if prediction fails
+    """
+    # Check if it's the new DegradationEvaluationResult format
+    if hasattr(degradation_models, 'predict_lap_time'):
+        return degradation_models.predict_lap_time(compound, tyre_life)
+    
+    # Legacy linear format: Dict[str, Tuple[float, float]]
+    if isinstance(degradation_models, dict):
+        if compound in degradation_models:
+            slope, intercept = degradation_models[compound]
+            return slope * tyre_life + intercept
+    
+    return None
 
 
 def estimate_pit_loss_window(df: pd.DataFrame) -> np.ndarray:
@@ -62,24 +94,30 @@ def optimize_pit_window(
     compound: str = "MEDIUM",
     post_pit_compound: str = "HARD",
 ) -> pd.DataFrame:
-    """Compute total race time for each candidate pit lap."""
+    """Compute total race time for each candidate pit lap.
+    
+    Works seamlessly with both legacy linear dicts and new DegradationEvaluationResult format.
+    """
     results = []
-    slope_current, intercept_current = degradation_models[compound]
-    slope_post, intercept_post = degradation_models[post_pit_compound]
-    slope_post = max(0.0, slope_post)
-
+    
     for pit_lap in range(1, laps_remaining):
         remaining_after_pit = laps_remaining - pit_lap
 
         stay_time = 0.0
         for lap in range(pit_lap):
             tyre_age = current_tyre_life + lap
-            stay_time += slope_current * tyre_age + intercept_current
+            lap_time = predict_lap_time(degradation_models, compound, tyre_age)
+            if lap_time is None:
+                lap_time = 95.0  # Fallback default
+            stay_time += lap_time
 
         pit_time = float(pit_loss_value)
         for lap in range(remaining_after_pit):
             tyre_age = 1 + lap
-            pit_time += slope_post * tyre_age + intercept_post
+            lap_time = predict_lap_time(degradation_models, post_pit_compound, tyre_age)
+            if lap_time is None:
+                lap_time = 95.0  # Fallback default
+            pit_time += lap_time
 
         results.append({"PitLap": pit_lap, "TotalTime": stay_time + pit_time})
 

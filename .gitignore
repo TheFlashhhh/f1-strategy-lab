@@ -133,8 +133,23 @@ dmypy.json
 .DS_Store
 Thumbs.db
 
-# Project specific
+# Project specific: Generated/local data (not tracked in Git)
 data/raw/*
 data/processed/*
 data/features/*
-!.gitkeep
+# Preserve directory structure with .gitkeep
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/features/.gitkeep
+
+# FastF1 cache (large, auto-regenerated)
+data/raw/fastf1_cache/
+
+# Test/build artifacts (local only)
+*.parquet
+*.pkl
+*.pickle
+*.csv  # except legacy samples in docs
+check_*.py
+verify_*.py
+pipeline_output.txt

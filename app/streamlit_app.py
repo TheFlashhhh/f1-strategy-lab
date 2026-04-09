@@ -1,4 +1,12 @@
-"""Minimal Streamlit interface for pit-window strategy decisions."""
+"""Interactive Streamlit interface for pit-window strategy decisions with integrated Phase 1 stack.
+
+This app uses the complete Phase 1 pipeline:
+- Phase 1A: Miami Grand Prix data (2022–2025)
+- Phase 1B: Fuel correction (automatic)
+- Phase 1C: Piecewise degradation modeling (automatic, with linear fallback)
+
+Run as: streamlit run app/streamlit_app.py
+"""
 
 from __future__ import annotations
 
@@ -15,8 +23,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.data.loader import load_data
 from src.data.preprocess import build_model_df, clean_laps, detect_pit_stops, select_relevant_columns
-from src.features.build_features import create_degradation_table, fit_degradation_models
+from src.features.evaluate_degradation import evaluate_all_degradation
 from src.simulation.strategy import (
     estimate_pit_loss_window,
     find_optimal_pit_lap,
@@ -26,9 +35,9 @@ from src.simulation.strategy import (
 
 
 @st.cache_data
-def load_and_prepare_data(csv_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load csv, detect pit stops, and prepare cleaned/model datasets."""
-    raw_df = pd.read_csv(csv_path)
+def load_and_prepare_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load Phase 1A data, detect pit stops, and prepare cleaned/model datasets."""
+    raw_df = load_data(dataset="miami_historical", project_root=ROOT)
     selected_df = select_relevant_columns(raw_df)
     pit_df = detect_pit_stops(selected_df)
     clean_df = clean_laps(pit_df)
@@ -37,37 +46,45 @@ def load_and_prepare_data(csv_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 @st.cache_data
-def build_models_and_pit_loss(pit_df: pd.DataFrame, model_df: pd.DataFrame) -> tuple[dict[str, tuple[float, float]], float, int]:
-    """Fit degradation models and estimate median empirical pit-loss."""
-    model_deg_df = create_degradation_table(model_df)
-    degradation_models = fit_degradation_models(model_deg_df)
+def build_integrated_pipeline(pit_df: pd.DataFrame, model_df: pd.DataFrame) -> tuple:
+    """Build complete Phase 1 pipeline with fuel correction and piecewise degradation."""
+    # Evaluate degradation (Phase 1B + 1C integrated)
+    deg_result = evaluate_all_degradation(
+        model_df,
+        use_fuel_correction=True,  # Phase 1B
+        use_piecewise=True,         # Phase 1C
+    )
 
+    # Estimate pit loss
     pit_loss_samples = estimate_pit_loss_window(pit_df)
     if len(pit_loss_samples) == 0:
         raise ValueError("No valid pit-loss samples were produced from the dataset.")
 
     pit_loss_value = float(np.median(pit_loss_samples))
-    return degradation_models, pit_loss_value, int(len(pit_loss_samples))
+    return deg_result, pit_loss_value, int(len(pit_loss_samples))
 
 
 st.set_page_config(page_title="F1 Strategy Lab", layout="wide")
 st.title("F1 Strategy Lab")
-st.caption("Interactive pit-window decision engine")
+st.caption("Interactive pit-window decision engine (Phase 1: Data + Fuel Correction + Piecewise Degradation)")
 st.write(
-    "This app uses reusable project modules to estimate pit loss and optimize pit timing "
-    "for a selected race state from the 2020 Abu Dhabi lap-level dataset."
+    "This app uses the integrated Phase 1 pipeline for Miami Grand Prix races (2022–2025):\n"
+    "- **Phase 1A**: Race data loading (Parquet)\n"
+    "- **Phase 1B**: Fuel correction (automatic)\n"
+    "- **Phase 1C**: Piecewise degradation with cliff detection (where data supports it)"
 )
 
-csv_file = ROOT / "data" / "raw" / "2020_abudhabi_race.csv"
-
 try:
-    pit_df, model_df = load_and_prepare_data(str(csv_file))
-    degradation_models, pit_loss_value, pit_sample_count = build_models_and_pit_loss(pit_df, model_df)
+    pit_df, model_df = load_and_prepare_data()
+    deg_result, pit_loss_value, pit_sample_count = build_integrated_pipeline(pit_df, model_df)
 except Exception as exc:
-    st.error(f"Failed to initialize data/model pipeline: {exc}")
+    st.error(f"Failed to initialize Phase 1 pipeline: {exc}")
     st.stop()
 
-available_compounds = sorted(degradation_models.keys())
+# Build compound list from available models
+available_compounds = ["SOFT", "MEDIUM", "HARD"]
+available_compounds = [c for c in available_compounds if deg_result.get_model_info(c)["model_type"]]
+
 if not available_compounds:
     st.error("No degradation models are available from the current dataset.")
     st.stop()
@@ -90,7 +107,7 @@ target_compound = st.sidebar.selectbox(
 )
 
 strategy_df = optimize_pit_window(
-    degradation_models=degradation_models,
+    degradation_models=deg_result,  # Pass unified result directly
     pit_loss_value=pit_loss_value,
     current_tyre_life=current_tyre_life,
     laps_remaining=laps_remaining,
@@ -100,7 +117,7 @@ strategy_df = optimize_pit_window(
 
 optimal_pit_lap, best_total_time = find_optimal_pit_lap(strategy_df)
 decision = recommend_action(
-    degradation_models=degradation_models,
+    degradation_models=deg_result,
     pit_loss_value=pit_loss_value,
     current_tyre_life=current_tyre_life,
     laps_remaining=laps_remaining,
@@ -133,9 +150,25 @@ ax.grid(True, alpha=0.3)
 ax.legend()
 st.pyplot(fig)
 
+st.subheader("Model Status")
+col1, col2, col3 = st.columns(3)
+for i, comp in enumerate(["SOFT", "MEDIUM", "HARD"]):
+    info = deg_result.get_model_info(comp)
+    if info["model_type"]:
+        with [col1, col2, col3][i]:
+            st.metric(
+                f"{comp}",
+                f"{info['model_type']}",
+                f"{info['samples']} laps"
+                + (f" | cliff @{info['breakpoint_tyre_life']}" if info["is_piecewise"] else ""),
+            )
+
 st.subheader("Info")
 st.markdown(
-    f"- Data source: `{csv_file.relative_to(ROOT)}`\n"
-    f"- Pit-loss samples used: {pit_sample_count}\n"
-    "- This is a deterministic baseline and does not model traffic, safety cars, or opponent actions."
+    f"- **Data source**: Phase 1A Miami Grand Prix Parquet (2022–2025)\n"
+    f"- **Pit-loss samples used**: {pit_sample_count}\n"
+    f"- **Fuel correction**: Applied automatically (Phase 1B)\n"
+    f"- **Degradation model**: Piecewise with cliff detection (Phase 1C) where data supports; linear fallback\n"
+    f"- **Baseline**: Deterministic optimization (does not model traffic, safety cars, or opponent actions)"
 )
+
