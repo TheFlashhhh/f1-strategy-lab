@@ -35,6 +35,7 @@ from src.simulation.strategy import (
     recommend_action,
 )
 from src.simulation.strategy_engine import recommend_best_strategy
+from src.simulation.strategy_sensitivity import assess_strategy_stability
 
 
 def main() -> None:
@@ -218,8 +219,76 @@ def main() -> None:
         if predicted:
             print(f"  Tyre-life {tyre_life:2d}: {predicted:.2f} s")
 
+    # Phase 2C: Strategy Sensitivity Analysis
     print("\n" + "=" * 80)
-    print("PHASE 1 + PHASE 2B + PHASE 2A DEMO COMPLETE")
+    print("PHASE 2C: STRATEGY SENSITIVITY & UNCERTAINTY ANALYSIS")
+    print("=" * 80)
+    print("\nAnalyzing stability of recommendation under reasonable assumptions...")
+    
+    try:
+        stability_assessment = assess_strategy_stability(
+            baseline_plan=best_plan,
+            pit_loss_value=pit_loss_value,
+            degradation_models=deg_result,
+            current_compound=compound,
+            current_tyre_life=current_tyre_life,
+            laps_remaining=laps_remaining,
+        )
+        
+        print(f"\n[Baseline Recommendation]")
+        print(f"  Strategy: {best_plan.strategy_type.upper()}")
+        print(f"  Next Tyre: {best_plan.next_compound}")
+        print(f"  Pit Lap: {best_plan.pit_lap}")
+        if best_plan.second_pit_lap:
+            print(f"  Second Pit Lap: {best_plan.second_pit_lap}")
+        print(f"  Total Time: {best_plan.total_race_time:.2f}s")
+        
+        print(f"\n[Stability Assessment]")
+        print(f"  Label: {stability_assessment.stability_label}")
+        
+        print(f"\n[Pit-Loss Sensitivity] (baseline: {pit_loss_value:.2f}s)")
+        if stability_assessment.pit_loss_sensitive:
+            print(f"  Status: SENSITIVE - recommendation changes under ±1-2s variation")
+            for scenario in stability_assessment.pit_loss_sensitivity.scenarios:
+                if scenario.recommendation_changed:
+                    delta_str = f"{scenario.pit_loss_value - pit_loss_value:+.1f}s"
+                    print(f"    ○ At {delta_str}: {scenario.best_plan.next_compound} @ L{scenario.best_plan.pit_lap}")
+        else:
+            print(f"  Status: STABLE - recommendation unchanged under ±1-2s variation")
+        
+        print(f"\n[Degradation Sensitivity] (baseline model)")
+        if stability_assessment.degradation_sensitive:
+            print(f"  Status: SENSITIVE - recommendation changes under assumption variation")
+            for scenario in stability_assessment.degradation_sensitivity.scenarios:
+                if scenario.recommendation_changed:
+                    scenario_label = "optimistic" if "optimistic" in scenario.scenario_name else "pessimistic"
+                    print(f"    ○ {scenario_label.upper()}: {scenario.best_plan.next_compound} @ L{scenario.best_plan.pit_lap}")
+        else:
+            print(f"  Status: STABLE - recommendation unchanged across degradation scenarios")
+        
+        if stability_assessment.flip_conditions:
+            print(f"\n[Flip Conditions]")
+            for condition in stability_assessment.flip_conditions:
+                print(f"  • {condition}")
+        else:
+            print(f"\n[Flip Conditions]")
+            print(f"  • None identified - recommendation is robust")
+        
+        # Save sensitivity artifact
+        artifact_path = ROOT / "data" / "processed" / "phase2c_sensitivity_summary.json"
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(artifact_path, "w") as f:
+            json.dump(stability_assessment.to_dict(), f, indent=2)
+        print(f"\n  [OK] Sensitivity artifact saved to {artifact_path}")
+        
+    except Exception as e:
+        print(f"\n  [ERROR] Phase 2C analysis failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+    print("\n" + "=" * 80)
+    print("PHASE 1 + PHASE 2B + PHASE 2A + PHASE 2C DEMO COMPLETE")
     print("=" * 80)
     print("\nKey points:")
     print("  [OK] Phase 1A data loading (Parquet-first)")
@@ -231,11 +300,18 @@ def main() -> None:
     print("  [OK] Phase 2A automatic strategy search")
     print("  [OK] One-stop vs two-stop evaluation")
     print("  [OK] Ranked strategy recommendations")
+    print("  [OK] Phase 2C sensitivity analysis (pit-loss & degradation)")
     print("\nPhase 2B enables:")
     print("  - Circuit-specific modeling (Miami pit loss, degradation)")
     print("  - Current-season recency (2026 races before Miami)")
     print("  - Explicit, inspectable weighting (40% Miami + 60% 2026)")
     print("  - Blended degradation models (more adaptive strategy)")
+    print("\nPhase 2C enables:")
+    print("  - Scenario-based sensitivity analysis (NOT probabilistic)")
+    print("  - Pit-loss assumption testing (±1-2 seconds)")
+    print("  - Degradation assumption testing (optimistic/pessimistic)")
+    print("  - Stability classification (Stable / Moderately Sensitive / Fragile)")
+    print("  - Identification of flip conditions")
 
 
 

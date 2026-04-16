@@ -31,6 +31,7 @@ from src.simulation.strategy import (
     optimize_pit_window,
 )
 from src.simulation.strategy_engine import recommend_best_strategy
+from src.simulation.strategy_sensitivity import assess_strategy_stability
 
 # ============================================================================
 # CACHED DATA LOADING
@@ -382,6 +383,101 @@ def render_advanced_analysis(available_compounds, deg_result, pit_loss_value,
         st.dataframe(pd.DataFrame(prediction_data), use_container_width=True, hide_index=True)
 
 
+def render_phase2c_sensitivity(
+    best_plan,
+    pit_loss_value: float,
+    deg_result,
+    current_compound: str,
+    current_tyre_life: int,
+    laps_remaining: int,
+):
+    """Render Phase 2C sensitivity analysis section."""
+    st.subheader("🔍 Recommendation Stability (Phase 2C)")
+    
+    try:
+        # Perform sensitivity analysis
+        stability_assessment = assess_strategy_stability(
+            baseline_plan=best_plan,
+            pit_loss_value=pit_loss_value,
+            degradation_models=deg_result,
+            current_compound=current_compound,
+            current_tyre_life=current_tyre_life,
+            laps_remaining=laps_remaining,
+        )
+        
+        # Display stability label with color coding
+        stability_colors = {
+            "Stable": "green",
+            "Moderately Sensitive": "orange",
+            "Fragile": "red",
+        }
+        color = stability_colors.get(stability_assessment.stability_label, "blue")
+        
+        col1, col2, col3 = st.columns([2, 2, 2])
+        with col1:
+            st.metric("Stability", stability_assessment.stability_label)
+        with col2:
+            pit_changes = sum(1 for s in stability_assessment.pit_loss_sensitivity.scenarios if s.recommendation_changed)
+            st.metric("Pit-Loss Sensitive", "Yes" if pit_changes > 0 else "No")
+        with col3:
+            deg_changes = sum(1 for s in stability_assessment.degradation_sensitivity.scenarios if s.recommendation_changed)
+            st.metric("Degradation Sensitive", "Yes" if deg_changes > 0 else "No")
+        
+        st.divider()
+        
+        # Pit-loss sensitivity table
+        st.markdown("**Pit-Loss Sensitivity** (testing ±1-2 seconds)")
+        pit_loss_data = []
+        for scenario in stability_assessment.pit_loss_sensitivity.scenarios:
+            pit_loss_data.append({
+                "Pit Loss": f"{scenario.pit_loss_value:.1f}s",
+                "Next Compound": scenario.best_plan.next_compound,
+                "Pit Lap": scenario.best_plan.pit_lap,
+                "Time": f"{scenario.best_plan.total_race_time:.1f}s",
+                "Changed": "Yes" if scenario.recommendation_changed else "No",
+            })
+        
+        if pit_loss_data:
+            st.dataframe(
+                pd.DataFrame(pit_loss_data),
+                use_container_width=True,
+                hide_index=True,
+            )
+        
+        st.divider()
+        
+        # Degradation sensitivity table
+        st.markdown("**Degradation Sensitivity** (testing optimistic/pessimistic wear)")
+        deg_data = []
+        for scenario in stability_assessment.degradation_sensitivity.scenarios:
+            scenario_label = "Optimistic" if "optimistic" in scenario.scenario_name else "Pessimistic"
+            deg_data.append({
+                "Scenario": scenario_label,
+                "Scale Factor": f"{scenario.degradation_scale_factor:.1f}x",
+                "Next Compound": scenario.best_plan.next_compound,
+                "Pit Lap": scenario.best_plan.pit_lap,
+                "Time": f"{scenario.best_plan.total_race_time:.1f}s",
+                "Changed": "Yes" if scenario.recommendation_changed else "No",
+            })
+        
+        if deg_data:
+            st.dataframe(
+                pd.DataFrame(deg_data),
+                use_container_width=True,
+                hide_index=True,
+            )
+        
+        # Flip conditions
+        if stability_assessment.flip_conditions:
+            st.divider()
+            st.markdown("**⚠️ Flip Conditions**")
+            for condition in stability_assessment.flip_conditions:
+                st.warning(f"• {condition}")
+        
+    except Exception as e:
+        st.error(f"Sensitivity analysis failed: {e}")
+
+
 def render_assumptions_footer():
     """Render assumptions and limitations."""
     with st.expander("⚠️ Assumptions & Limitations", expanded=False):
@@ -462,6 +558,17 @@ def main():
         render_model_status(deg_result)
     with col_right:
         render_data_context(hybrid_context)
+    
+    # === PHASE 2C SENSITIVITY SECTION ===
+    st.divider()
+    render_phase2c_sensitivity(
+        best_plan=best_plan,
+        pit_loss_value=pit_loss_value,
+        deg_result=deg_result,
+        current_compound=compound,
+        current_tyre_life=current_tyre_life,
+        laps_remaining=laps_remaining,
+    )
     
     # === ADVANCED ANALYSIS SECTION ===
     if show_advanced:

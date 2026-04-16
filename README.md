@@ -52,6 +52,7 @@ streamlit run app/streamlit_app.py
 ### Phase 2: Strategy Optimization
 - ✅ **Phase 2A:** Automatic strategy search and recommendation (one-stop vs two-stop, ranked by time)
 - ✅ **Phase 2B:** Hybrid data blending (Miami-specific + current-season recency, 40%-60% weighting)
+- ✅ **Phase 2C:** Strategy sensitivity analysis (pit-loss & degradation scenario testing, stability classification)
 
 ### Unified Pipeline
 ```python
