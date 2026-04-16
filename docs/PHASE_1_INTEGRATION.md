@@ -2,7 +2,9 @@
 
 ## Status: ✅ COMPLETE
 
-Phase 1A + Phase 1B + Phase 1C have been successfully integrated into the **active main pipeline**. The project now uses the complete Phase 1 stack by default while maintainingbackward compatibility.
+Phase 1A + Phase 1B + Phase 1C have been successfully integrated into the **active main pipeline**. The project now uses the complete Phase 1 stack by default while maintaining backward compatibility.
+
+**Phase 2A (Strategy Engine) is built on top of Phase 1 and now provides automatic strategy recommendation.**
 
 ---
 

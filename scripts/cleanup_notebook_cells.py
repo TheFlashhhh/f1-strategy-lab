@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+"""Clean up EDA notebook by removing unnecessary cells.
+
+Run from project root: python scripts/cleanup_notebook_cells.py
+"""
 import json
 
 # Load the notebook

@@ -123,30 +123,100 @@ class DataLoader:
         )
 
     def _load_2026_pre_miami(self) -> pd.DataFrame:
-        """Load 2026 pre-Miami races (if available)."""
+        """Load 2026 pre-Miami races with unified source-of-truth logic.
+        
+        **Source Priority (prevents duplicate loading):**
+        1. If combined.parquet exists and is valid → use it as sole source
+        2. Otherwise → load individual race files (deduplicating variants)
+        3. Never mix combined.parquet + individual files (prevents overcounting)
+        
+        **Bug Fix:** Previous version loaded all .parquet files including
+        combined.parquet + individual races, causing 2.33× data inflation
+        (Australia/Australian duplicates + full dataset loaded twice).
+        
+        Returns:
+            DataFrame with 2026 pre-Miami race data from preferred source.
+        """
         pre_miami_dir = self.data_dir / "season_2026_pre_miami"
 
         if not pre_miami_dir.exists():
             logger.warning("2026 pre-Miami directory not found.")
             return pd.DataFrame()
 
-        parquet_files = list(pre_miami_dir.glob("*.parquet"))
-        if not parquet_files:
-            logger.warning("No Parquet files in season_2026_pre_miami directory.")
+        # SOURCE OF TRUTH: Prefer combined.parquet (prevents duplicates)
+        combined_path = pre_miami_dir / "combined.parquet"
+        if combined_path.exists():
+            try:
+                df = pd.read_parquet(combined_path)
+                if len(df) > 0:
+                    logger.info(
+                        f"✓ Loaded {len(df)} laps from COMBINED.PARQUET "
+                        f"(single source-of-truth, deduplication: individual files ignored)"
+                    )
+                    return self._normalize_schema(df)
+                else:
+                    logger.warning("combined.parquet exists but is empty; trying individual files...")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load combined.parquet ({e}); falling back to individual files..."
+                )
+
+        # FALLBACK: Load individual race files only (no combined.parquet)
+        logger.info(
+            "Loading 2026 pre-Miami from individual race files "
+            "(combined.parquet not available or invalid)"
+        )
+        
+        # Get all race files, excluding combined.parquet
+        race_files = [
+            pf for pf in pre_miami_dir.glob("*.parquet")
+            if pf.name != "combined.parquet"
+        ]
+        
+        if not race_files:
+            logger.warning("No individual race files in season_2026_pre_miami directory.")
             return pd.DataFrame()
 
+        # Deduplicate: prefer one spelling of Australia if both exist
+        # (handles Australia_grand_prix vs Australian_grand_prix variants)
+        australia_variants = [
+            pf for pf in race_files
+            if "australia" in pf.stem.lower()
+        ]
+        
+        deduplicated_files = list(race_files)
+        if len(australia_variants) > 1:
+            # Multiple Australia files: keep only the first (alphabetically)
+            # This handles both 2026_australia_grand_prix_race.parquet and
+            # 2026_australian_grand_prix_race.parquet (same data)
+            australia_variants_sorted = sorted(australia_variants, key=lambda x: x.name)
+            australia_to_remove = australia_variants_sorted[1:]
+            logger.warning(
+                f"Found {len(australia_variants)} Australia race files; "
+                f"using {australia_variants_sorted[0].name}, ignoring duplicates: "
+                f"{[f.name for f in australia_to_remove]}"
+            )
+            deduplicated_files = [
+                pf for pf in deduplicated_files
+                if pf not in australia_to_remove
+            ]
+
+        # Load individual files
         dfs = []
-        for pf in parquet_files:
+        for pf in sorted(deduplicated_files):
             try:
                 df = pd.read_parquet(pf)
                 dfs.append(df)
-                logger.info(f"Loaded {len(df)} laps from {pf.stem}")
+                logger.info(f"  Loaded {len(df)} laps from {pf.stem}")
             except Exception as e:
-                logger.warning(f"Failed to load {pf}: {e}")
+                logger.warning(f"  Failed to load {pf}: {e}")
 
         if dfs:
             df = pd.concat(dfs, ignore_index=True)
-            logger.info(f"✓ Loaded {len(df)} laps from 2026 pre-Miami")
+            logger.info(
+                f"✓ Loaded {len(df)} laps from {len(dfs)} individual race file(s) "
+                f"(source-of-truth: individual races, combined.parquet not available)"
+            )
             return self._normalize_schema(df)
 
         logger.warning("No 2026 pre-Miami data could be loaded.")

@@ -63,13 +63,14 @@ class DegradationEvaluationResult:
         """Predict lap time for a given compound and tyre-life.
         
         Automatically uses piecewise model if available, falls back to linear.
+        Defensive against NaN model parameters.
         
         Args:
             compound: Compound name (e.g., "MEDIUM")
             tyre_life: Current tyre-life value
             
         Returns:
-            Predicted lap time in seconds, or None if compound not found
+            Predicted lap time in seconds, or None if compound not found or model invalid
         """
         # Try piecewise first
         if compound in self.piecewise_models:
@@ -78,26 +79,50 @@ class DegradationEvaluationResult:
             # Use piecewise if not fallen back to linear
             if not pw_model.fell_back_to_linear:
                 if tyre_life <= pw_model.breakpoint_tyre_life:
-                    return (
+                    prediction = (
                         pw_model.pre_cliff_slope * tyre_life
                         + pw_model.pre_cliff_intercept
                     )
                 else:
-                    return (
+                    prediction = (
                         pw_model.post_cliff_slope * tyre_life
                         + pw_model.post_cliff_intercept
                     )
+                # Check for NaN result from model parameters
+                if pd.isna(prediction):
+                    logger.warning(
+                        f"Piecewise prediction for {compound} returned NaN. "
+                        f"Model parameters may be invalid. Falling back to None."
+                    )
+                    return None
+                return prediction
             # Fall back to linear within piecewise model structure
             else:
-                return (
+                prediction = (
                     pw_model.pre_cliff_slope * tyre_life
                     + pw_model.pre_cliff_intercept
                 )
+                if pd.isna(prediction):
+                    logger.warning(
+                        f"Linear (piecewise) prediction for {compound} returned NaN. "
+                        f"Model parameters may be invalid. Falling back to None."
+                    )
+                    return None
+                return prediction
         
         # Fall back to linear model
         if compound in self.linear_models:
             lin_model = self.linear_models[compound]
-            return lin_model.slope * tyre_life + lin_model.intercept
+            prediction = lin_model.slope * tyre_life + lin_model.intercept
+            # Check for NaN (can happen if slope/intercept are NaN)
+            if pd.isna(prediction):
+                logger.warning(
+                    f"Linear prediction for {compound} returned NaN. "
+                    f"Slope={lin_model.slope}, Intercept={lin_model.intercept}. "
+                    f"Model may be invalid."
+                )
+                return None
+            return prediction
         
         logger.warning(f"No degradation model found for compound {compound}")
         return None

@@ -1,3 +1,10 @@
+#!/usr/bin/env python
+"""Inspect notebook cell structure.
+
+Utility script to examine the cells in the EDA notebook.
+Run from project root: python scripts/inspect_notebook_cells.py
+"""
+
 import json
 
 with open('notebooks/eda.ipynb', 'r') as f:

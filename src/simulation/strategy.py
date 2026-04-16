@@ -125,8 +125,37 @@ def optimize_pit_window(
 
 
 def find_optimal_pit_lap(strategy_df: pd.DataFrame) -> Tuple[int, float]:
-    """Return the pit lap and total time for the minimum-time strategy."""
+    """Return the pit lap and total time for the minimum-time strategy.
+    
+    Handles NaN/invalid cases defensively:
+    - If all TotalTime values are NaN, raises clear error
+    - If no valid rows exist, raises clear error
+    - Otherwise returns the minimum-time row
+    """
+    if strategy_df.empty:
+        raise ValueError(
+            "Strategy DataFrame is empty. Cannot find optimal pit lap. "
+            "Check degradation models are properly initialized."
+        )
+    
+    # Check for NaN in TotalTime column
+    if strategy_df["TotalTime"].isna().all():
+        raise ValueError(
+            "All TotalTime values are NaN in strategy_df. "
+            "This indicates degradation model failure. "
+            "Check that models were fitted with sufficient data."
+        )
+    
+    # Find minimum, skipping NaN values
     best_idx = strategy_df["TotalTime"].idxmin()
+    
+    # Check if idxmin() returned NaN (shouldn't happen after above check, but be defensive)
+    if pd.isna(best_idx):
+        raise ValueError(
+            "Strategy optimization failed: idxmin() returned NaN. "
+            "This indicates corrupted strategy data."
+        )
+    
     return int(strategy_df.loc[best_idx, "PitLap"]), float(strategy_df.loc[best_idx, "TotalTime"])
 
 

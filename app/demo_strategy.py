@@ -1,17 +1,19 @@
-"""Runnable demo for the complete F1 Strategy Lab with integrated Phase 1 stack.
+"""Runnable demo for the complete F1 Strategy Lab with Phase 2B hybrid modeling.
 
-This demo demonstrates the full Phase 1 pipeline:
-- Phase 1A: Data loading (Miami historical + 2026 pre-Miami)
+This demo demonstrates the Phase 2B hybrid data/model pipeline:
+- Phase 1A: Data loading (Miami historical + 2026 pre-Miami blended)
 - Phase 1B: Fuel correction (fuel-load confound removal)
 - Phase 1C: Degradation modeling (piecewise with cliff detection)
+- Phase 2B: Hybrid modeling (Miami-specific + current-season recency blend)
 
-Result: Improved pit-timing strategy with transparent model reporting.
+Result: Improved pit-timing strategy with transparent hybrid-model reporting.
 
 Run as: python app/demo_strategy.py
 """
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -23,28 +25,41 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.data.loader import load_data
 from src.data.preprocess import build_model_df, clean_laps, detect_pit_stops, select_relevant_columns
 from src.features.evaluate_degradation import evaluate_all_degradation
+from src.features.hybrid_modeling import load_or_build_hybrid_dataset, summarize_hybrid_context
 from src.simulation.strategy import (
     estimate_pit_loss_window,
     find_optimal_pit_lap,
     optimize_pit_window,
     recommend_action,
 )
+from src.simulation.strategy_engine import recommend_best_strategy
 
 
 def main() -> None:
-    """Run integrated Phase 1 demo."""
+    """Run integrated Phase 2B hybrid modeling demo."""
     print("\n" + "=" * 80)
-    print("F1 STRATEGY LAB - INTEGRATED PHASE 1 PIPELINE")
+    print("F1 STRATEGY LAB - PHASE 2B HYBRID MODELING PIPELINE")
     print("=" * 80)
 
-    # Phase 1A: Load data
-    print("\nPhase 1A: Loading data...")
-    df_raw = load_data(dataset="miami_historical", project_root=ROOT)
-    print(f"  Loaded {len(df_raw)} raw laps")
-
+    # Phase 2B: Load hybrid dataset
+    print("\nPhase 2B: Loading hybrid dataset (Miami historical + 2026 pre-Miami)...")
+    try:
+        df_raw, hybrid_context = load_or_build_hybrid_dataset(project_root=ROOT)
+        print(f"  [OK] Hybrid dataset loaded: {len(df_raw)} total laps")
+        print(f"  [OK] Active pools: {len(hybrid_context.active_pools)}")
+        for pool in hybrid_context.active_pools:
+            print(f"    - {pool.name} ({pool.sample_count} laps, role: {pool.circuit_role})")
+    except Exception as e:
+        print(f"  [ERROR] Hybrid loading failed: {e}")
+        print("  Falling back to Miami historical only...")
+        from src.data.loader import load_data
+        df_raw = load_data(dataset="miami_historical", project_root=ROOT)
+        hybrid_context = None
+    
+    # Preprocessing
+    print("\nPhase 1A: Preprocessing data...")
     df = select_relevant_columns(df_raw)
     df = detect_pit_stops(df)
     clean_df = clean_laps(df)
@@ -83,12 +98,54 @@ def main() -> None:
     print(f"  Pit-loss samples: {len(pit_loss_samples)}")
     print(f"  Median pit-loss: {pit_loss_value:.2f} s")
 
+    # Report hybrid modeling context (Phase 2B)
+    if hybrid_context:
+        print("\n" + "-" * 80)
+        print("PHASE 2B HYBRID MODELING CONTEXT")
+        print("-" * 80)
+        
+        summary = summarize_hybrid_context(hybrid_context)
+        
+        print("\nData Pool Composition:")
+        for pool_info in summary["data_grouping"]:
+            print(f"\n  {pool_info['name']}")
+            print(f"    Role: {pool_info['role']}")
+            print(f"    Target: {pool_info['target_race_context']}")
+            print(f"    Raw weight: {pool_info['recency_weight']}")
+            print(f"    Normalized: {pool_info['normalized_weight']:.1%}")
+            print(f"    Laps: {pool_info['sample_counts']['total_laps']}")
+            if pool_info["sample_counts"]["by_compound"]:
+                for compound, count in pool_info["sample_counts"]["by_compound"].items():
+                    print(f"      {compound}: {count}")
+        
+        print("\nBlending Strategy:")
+        print(f"  Method: {summary['blending_strategy']['method']}")
+        print(f"  Total laps in blended dataset: {summary['total_laps']}")
+        print(f"\n  Philosophy: {pool_info['role']}")
+        print(f"    - Miami pool: Circuit-specific baseline (pit loss, degradation patterns)")
+        print(f"    - 2026 pool: Current-season recency (latest car/tyre behavior)")
+        print(f"    - Blend: 40% Miami + 60% 2026 = adaptive strategy model")
+        
+        # Save summary
+        summary_path = ROOT / "data" / "processed" / "phase2b_data_summary.json"
+        try:
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(summary_path, "w") as f:
+                json.dump(summary, f, indent=2)
+            print(f"\n  [OK] Summary saved to {summary_path}")
+        except Exception as e:
+            print(f"\n  [ERROR] Failed to save summary: {e}")
+        
+        print("-" * 80)
+
     # Optimize strategy
     print("\nOptimizing pit strategy...")
     current_tyre_life = 5
     laps_remaining = 25
     compound = "MEDIUM"
     
+    # Single-scenario optimization
+    print("\n  [Single Scenario Analysis]")
     strategy_df = optimize_pit_window(
         degradation_models=deg_result,  # Pass the unified result directly
         pit_loss_value=pit_loss_value,
@@ -102,6 +159,7 @@ def main() -> None:
     print(f"    Optimal pit lap: {optimal_pit_lap}")
     print(f"    Minimum total time: {optimal_total_time:.2f} s")
 
+
     decision = recommend_action(
         degradation_models=deg_result,
         pit_loss_value=pit_loss_value,
@@ -111,6 +169,48 @@ def main() -> None:
     )
     print(f"    Decision: {decision}")
 
+    # Phase 2A: Automatic strategy recommendation
+    print("\n  [Phase 2A - Automatic Strategy Search]")
+    best_plan, all_ranked_plans = recommend_best_strategy(
+        degradation_models=deg_result,
+        pit_loss_value=pit_loss_value,
+        current_compound=compound,
+        current_tyre_life=current_tyre_life,
+        laps_remaining=laps_remaining,
+        candidate_compounds=["SOFT", "MEDIUM", "HARD"],
+        include_two_stop=True,
+    )
+
+    print(f"\n  Top Recommendation:")
+    print(f"    Type: {best_plan.strategy_type.upper()}")
+    print(f"    Next Tyre: {best_plan.next_compound}")
+    print(f"    Pit Lap: {best_plan.pit_lap}")
+    if best_plan.second_pit_lap:
+        print(f"    Second Pit Lap: {best_plan.second_pit_lap}")
+        print(f"    Final Tyre: {best_plan.final_compound}")
+    print(f"    Total Time: {best_plan.total_race_time:.2f} s")
+    print(f"    Feasible: {'[OK] Yes' if best_plan.feasible else '[!] Check'}")
+    print(f"    Rationale: {best_plan.explanation}")
+
+    print(f"\n  Top 5 Strategy Options (ranked by time):")
+    for i, plan in enumerate(all_ranked_plans[:5], 1):
+        feasible_mark = "[OK]" if plan.feasible else "[!]"
+        time_diff = plan.total_race_time - best_plan.total_race_time
+        diff_str = f"{time_diff:+.2f}s" if time_diff != 0 else "BEST"
+        
+        if plan.strategy_type == "one-stop":
+            print(
+                f"    {i}. {feasible_mark} ONE-STOP  | "
+                f"{plan.current_compound}->{plan.next_compound} @ L{plan.pit_lap} | "
+                f"Time: {plan.total_race_time:.2f}s ({diff_str})"
+            )
+        else:
+            print(
+                f"    {i}. {feasible_mark} TWO-STOP  | "
+                f"{plan.current_compound}->{plan.next_compound}->{plan.final_compound} @ L{plan.pit_lap},{plan.second_pit_lap} | "
+                f"Time: {plan.total_race_time:.2f}s ({diff_str})"
+            )
+
     # Show example predictions
     print("\nExample lap-time predictions (MEDIUM compound, using active models):")
     for tyre_life in [1, 5, 10, 15, 20]:
@@ -119,14 +219,24 @@ def main() -> None:
             print(f"  Tyre-life {tyre_life:2d}: {predicted:.2f} s")
 
     print("\n" + "=" * 80)
-    print("PHASE 1 INTEGRATED DEMO COMPLETE")
+    print("PHASE 1 + PHASE 2B + PHASE 2A DEMO COMPLETE")
     print("=" * 80)
     print("\nKey points:")
-    print("  ✓ Phase 1A data loading")
-    print("  ✓ Phase 1B fuel correction (automatic)")
-    print("  ✓ Phase 1C piecewise degradation (with cliff detection)")
-    print("  ✓ Unified prediction interface")
-    print("  ✓ Transparent model reporting")
+    print("  [OK] Phase 1A data loading (Parquet-first)")
+    print("  [OK] Phase 2B hybrid modeling (Miami-specific + 2026 recency blend)")
+    print("  [OK] Phase 1B fuel correction (automatic)")
+    print("  [OK] Phase 1C piecewise degradation (with cliff detection)")
+    print("  [OK] Unified prediction interface")
+    print("  [OK] Transparent model reporting")
+    print("  [OK] Phase 2A automatic strategy search")
+    print("  [OK] One-stop vs two-stop evaluation")
+    print("  [OK] Ranked strategy recommendations")
+    print("\nPhase 2B enables:")
+    print("  - Circuit-specific modeling (Miami pit loss, degradation)")
+    print("  - Current-season recency (2026 races before Miami)")
+    print("  - Explicit, inspectable weighting (40% Miami + 60% 2026)")
+    print("  - Blended degradation models (more adaptive strategy)")
+
 
 
 if __name__ == "__main__":
