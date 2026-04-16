@@ -9,6 +9,7 @@ Utility scripts for data validation, notebook maintenance, and pipeline testing.
 | `validate_fuel_correction.py` | Verify Phase 1B fuel correction implementation |
 | `test_phase1_integration.py` | Quick test of complete Phase 1 pipeline |
 | `run_phase2d_validation.py` | Run representative Phase 2D robustness validation and save artifacts |
+| `run_pre3_backtest.py` | Run the Pre-3 support audit and held-out Miami backtest |
 | `verify_data_manifest.py` | Validate data ingestion manifest |
 | `inspect_notebook_cells.py` | Inspect EDA notebook cell structure |
 | `cleanup_notebook_cells.py` | Remove unnecessary cells from EDA notebook |
@@ -46,6 +47,13 @@ Canonical Phase 2D robustness evaluation:
 - Captures best strategy, pit laps, feasibility, and Phase 2C stability labels
 - Saves `data/processed/phase2d_validation_summary.json`
 - Saves `data/processed/phase2d_validation_summary.csv`
+
+### run_pre3_backtest.py
+Canonical Pre-3 defensibility workflow:
+- Builds the current role-based hybrid model and support-tier summary
+- Saves `data/processed/pre3_compound_support_summary.json`
+- Runs a held-out Miami 2024 backtest using earlier Miami years only
+- Saves `data/processed/pre3_backtest_summary.json`
 
 ### verify_data_manifest.py
 Validates data ingestion manifest integrity:

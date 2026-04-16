@@ -17,10 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.data.preprocess import build_model_df, clean_laps, detect_pit_stops, select_relevant_columns
+from src.data.preprocess import detect_pit_stops, select_relevant_columns
 from src.data.loader import DataLoader
-from src.features.evaluate_degradation import evaluate_all_degradation
-from src.features.hybrid_modeling import load_or_build_hybrid_dataset
+from src.features.hybrid_modeling import build_role_based_hybrid_model, load_or_build_hybrid_dataset
 from src.simulation.strategy import estimate_pit_loss_window
 from src.simulation.strategy_validation import (
     build_representative_scenario_suite,
@@ -38,16 +37,7 @@ def main() -> None:
 
     print("\nLoading hybrid dataset and building the strategy pipeline...")
     df_raw, hybrid_context = load_or_build_hybrid_dataset(project_root=ROOT)
-    df = select_relevant_columns(df_raw)
-    pit_df = detect_pit_stops(df)
-    clean_df = clean_laps(pit_df)
-    model_df = build_model_df(clean_df)
-
-    deg_result = evaluate_all_degradation(
-        model_df,
-        use_fuel_correction=True,
-        use_piecewise=True,
-    )
+    deg_result, _ = build_role_based_hybrid_model(project_root=ROOT)
 
     pit_loader = DataLoader(project_root=ROOT)
     pit_raw = pit_loader.load_data(dataset="miami_historical")
@@ -58,7 +48,7 @@ def main() -> None:
     pit_loss_value = float(np.median(pit_loss_samples))
 
     print(f"  Active pools: {len(hybrid_context.active_pools)}")
-    print(f"  Model-grade laps: {len(model_df):,}")
+    print(f"  Source laps across active pools: {len(df_raw):,}")
     print(f"  Miami pit-loss baseline: {pit_loss_value:.2f}s")
 
     scenarios = build_representative_scenario_suite()
@@ -83,6 +73,7 @@ def main() -> None:
     print(f"  Moderately Sensitive: {summary['stability_counts'].get('Moderately Sensitive', 0)}")
     print(f"  Fragile: {summary['stability_counts'].get('Fragile', 0)}")
     print(f"  Best-plan infeasible warnings: {summary['warning_counts'].get('best-plan-infeasible', 0)}")
+    print(f"  SOFT support tier: {summary['soft_compound_assessment'].get('support_tier')}")
     print(f"  SOFT weak-data signal: {summary['soft_compound_assessment']['weak_data_signal']}")
 
     print("\nRepresentative outcomes:")

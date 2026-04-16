@@ -4,7 +4,7 @@ This demo demonstrates the current strategy stack:
 - Phase 1A: Data loading (Miami historical + 2026 pre-Miami blended)
 - Phase 1B: Fuel correction (fuel-load confound removal)
 - Phase 1C: Degradation modeling (piecewise with cliff detection)
-- Phase 2B: Hybrid modeling (Miami-specific + current-season recency blend)
+- Phase 2B / Pre-3: Miami-anchor role-based hybrid modeling
 - Phase 2E: Strategy refinement / calibration (pit-loss + search cleanup)
 
 Result: Improved pit-timing strategy with transparent hybrid-model reporting.
@@ -19,17 +19,19 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 # Allow running as: python app/demo_strategy.py
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.data.preprocess import build_model_df, clean_laps, detect_pit_stops, select_relevant_columns
+from src.data.preprocess import detect_pit_stops, select_relevant_columns
 from src.data.loader import DataLoader
-from src.features.evaluate_degradation import evaluate_all_degradation
-from src.features.hybrid_modeling import load_or_build_hybrid_dataset, summarize_hybrid_context
+from src.features.hybrid_modeling import (
+    build_role_based_hybrid_model,
+    load_or_build_hybrid_dataset,
+    summarize_hybrid_context,
+)
 from src.simulation.strategy import (
     estimate_pit_loss_window,
     find_optimal_pit_lap,
@@ -50,7 +52,7 @@ def main() -> None:
     print("\nPhase 2B: Loading hybrid dataset (Miami historical + 2026 pre-Miami)...")
     try:
         df_raw, hybrid_context = load_or_build_hybrid_dataset(project_root=ROOT)
-        print(f"  [OK] Hybrid dataset loaded: {len(df_raw)} total laps")
+        print(f"  [OK] Hybrid context loaded: {len(df_raw)} total source laps")
         print(f"  [OK] Active pools: {len(hybrid_context.active_pools)}")
         for pool in hybrid_context.active_pools:
             print(f"    - {pool.name} ({pool.sample_count} laps, role: {pool.circuit_role})")
@@ -61,21 +63,8 @@ def main() -> None:
         df_raw = load_data(dataset="miami_historical", project_root=ROOT)
         hybrid_context = None
     
-    # Preprocessing
-    print("\nPhase 1A: Preprocessing data...")
-    df = select_relevant_columns(df_raw)
-    df = detect_pit_stops(df)
-    clean_df = clean_laps(df)
-    model_df = build_model_df(clean_df)
-    print(f"  Filtered to {len(model_df)} model-grade laps")
-
-    # Phases 1B + 1C Integrated: Evaluate degradation with fuel correction + piecewise
-    print("\nPhase 1B + 1C: Evaluating degradation (fuel correction + piecewise)...")
-    deg_result = evaluate_all_degradation(
-        model_df,
-        use_fuel_correction=True,
-        use_piecewise=True,
-    )
+    print("\nPhase 2B / Pre-3: Building role-based hybrid degradation model...")
+    deg_result, hybrid_context = build_role_based_hybrid_model(project_root=ROOT)
 
     # Display model status
     print("\nModel Status (by compound):")
@@ -83,14 +72,18 @@ def main() -> None:
         info = deg_result.get_model_info(compound)
         if info["model_type"]:
             print(
-                f"  {compound:8s} ({info['samples']:4d} samples): "
-                f"{info['model_type']:30s}"
-                + (
-                    f" [cliff at tyre-life {info['breakpoint_tyre_life']}]"
-                    if info["is_piecewise"]
-                    else ""
-                )
+                f"  {compound:8s} ({info['samples']:4d} total model laps): "
+                f"{info['model_type']:22s} "
+                f"| support: {info.get('support_tier', 'n/a')}"
             )
+            print(
+                f"    Miami anchor: {info.get('miami_model_type')} "
+                f"({info.get('miami_model_laps', 0)} laps) | "
+                f"2026 recency: {info.get('recency_model_type')} "
+                f"({info.get('recency_model_laps', 0)} laps)"
+            )
+            if info.get("support_reason"):
+                print(f"    Support note: {info['support_reason']}")
 
     # Estimate pit loss from Miami-only race context (circuit-specific calibration)
     print("\nEstimating Miami pit loss baseline...")
@@ -118,19 +111,20 @@ def main() -> None:
             print(f"    Role: {pool_info['role']}")
             print(f"    Target: {pool_info['target_race_context']}")
             print(f"    Raw weight: {pool_info['recency_weight']}")
-            print(f"    Normalized: {pool_info['normalized_weight']:.1%}")
+            normalized = pool_info["normalized_weight"]
+            print(f"    Normalized: {normalized:.1%}" if normalized is not None else "    Normalized: role-based only")
             print(f"    Laps: {pool_info['sample_counts']['total_laps']}")
             if pool_info["sample_counts"]["by_compound"]:
                 for compound, count in pool_info["sample_counts"]["by_compound"].items():
                     print(f"      {compound}: {count}")
-        
+
         print("\nBlending Strategy:")
         print(f"  Method: {summary['blending_strategy']['method']}")
-        print(f"  Total laps in blended dataset: {summary['total_laps']}")
-        print(f"\n  Philosophy: {pool_info['role']}")
-        print(f"    - Miami pool: Circuit-specific baseline (pit loss, degradation patterns)")
-        print(f"    - 2026 pool: Current-season recency (latest car/tyre behavior)")
-        print(f"    - Blend: 40% Miami + 60% 2026 = adaptive strategy model")
+        print(f"  Total laps across source pools: {summary['total_laps']}")
+        print("\n  Philosophy:")
+        print("    - Miami pool: Circuit-specific anchor")
+        print("    - 2026 pool: Bounded recency adjustment/support")
+        print("    - Non-Miami 2026 races are not presented as direct Miami degradation truth")
         
         # Save summary
         summary_path = ROOT / "data" / "processed" / "phase2b_data_summary.json"
@@ -162,7 +156,7 @@ def main() -> None:
     optimal_pit_lap, optimal_total_time = find_optimal_pit_lap(strategy_df)
 
     print(f"  Example scenario: {compound} compound, tyre-life {current_tyre_life}, {laps_remaining} laps remaining")
-    print(f"    Optimal pit lap: {optimal_pit_lap}")
+    print(f"    Optimal pit window: pit in {optimal_pit_lap} laps")
     print(f"    Minimum total time: {optimal_total_time:.2f} s")
 
 
@@ -190,13 +184,24 @@ def main() -> None:
     print(f"\n  Top Recommendation:")
     print(f"    Type: {best_plan.strategy_type.upper()}")
     print(f"    Next Tyre: {best_plan.next_compound}")
-    print(f"    Pit Lap: {best_plan.pit_lap}")
+    print(f"    First pit: in {best_plan.pit_lap} laps")
     if best_plan.second_pit_lap:
-        print(f"    Second Pit Lap: {best_plan.second_pit_lap}")
+        print(f"    Second pit: {best_plan.second_pit_lap - best_plan.pit_lap} laps after the first stop")
         print(f"    Final Tyre: {best_plan.final_compound}")
     print(f"    Total Time: {best_plan.total_race_time:.2f} s")
     print(f"    Feasible: {'[OK] Yes' if best_plan.feasible else '[!] Check'}")
     print(f"    Rationale: {best_plan.explanation}")
+    next_support = deg_result.get_support_info(best_plan.next_compound)
+    print(
+        f"    Next-tyre support: {next_support.get('support_tier', 'n/a')} "
+        f"({next_support.get('prediction_health', 'unknown')})"
+    )
+    if best_plan.final_compound:
+        final_support = deg_result.get_support_info(best_plan.final_compound)
+        print(
+            f"    Final-tyre support: {final_support.get('support_tier', 'n/a')} "
+            f"({final_support.get('prediction_health', 'unknown')})"
+        )
 
     print(f"\n  Top 5 Strategy Options (ranked by time):")
     for i, plan in enumerate(all_ranked_plans[:5], 1):
@@ -205,16 +210,23 @@ def main() -> None:
         diff_str = f"{time_diff:+.2f}s" if time_diff != 0 else "BEST"
         
         if plan.strategy_type == "one-stop":
+            plan_support = deg_result.get_support_info(plan.next_compound)
             print(
                 f"    {i}. {feasible_mark} ONE-STOP  | "
-                f"{plan.current_compound}->{plan.next_compound} @ L{plan.pit_lap} | "
-                f"Time: {plan.total_race_time:.2f}s ({diff_str})"
+                f"{plan.current_compound}->{plan.next_compound} @ in {plan.pit_lap} lap{'s' if plan.pit_lap != 1 else ''} | "
+                f"Time: {plan.total_race_time:.2f}s ({diff_str}) | "
+                f"support: {plan_support.get('support_tier', 'n/a')}"
             )
         else:
+            next_support = deg_result.get_support_info(plan.next_compound)
+            final_support = deg_result.get_support_info(plan.final_compound)
             print(
                 f"    {i}. {feasible_mark} TWO-STOP  | "
-                f"{plan.current_compound}->{plan.next_compound}->{plan.final_compound} @ L{plan.pit_lap},{plan.second_pit_lap} | "
-                f"Time: {plan.total_race_time:.2f}s ({diff_str})"
+                f"{plan.current_compound}->{plan.next_compound}->{plan.final_compound} @ "
+                f"in {plan.pit_lap} lap{'s' if plan.pit_lap != 1 else ''}, "
+                f"then {plan.second_pit_lap - plan.pit_lap} later | "
+                f"Time: {plan.total_race_time:.2f}s ({diff_str}) | "
+                f"support: {next_support.get('support_tier', 'n/a')}/{final_support.get('support_tier', 'n/a')}"
             )
 
     # Show example predictions
@@ -243,9 +255,9 @@ def main() -> None:
         print(f"\n[Baseline Recommendation]")
         print(f"  Strategy: {best_plan.strategy_type.upper()}")
         print(f"  Next Tyre: {best_plan.next_compound}")
-        print(f"  Pit Lap: {best_plan.pit_lap}")
+        print(f"  First pit: in {best_plan.pit_lap} laps")
         if best_plan.second_pit_lap:
-            print(f"  Second Pit Lap: {best_plan.second_pit_lap}")
+            print(f"  Second pit: {best_plan.second_pit_lap - best_plan.pit_lap} laps after the first stop")
         print(f"  Total Time: {best_plan.total_race_time:.2f}s")
         
         print(f"\n[Stability Assessment]")
@@ -257,7 +269,10 @@ def main() -> None:
             for scenario in stability_assessment.pit_loss_sensitivity.scenarios:
                 if scenario.recommendation_changed:
                     delta_str = f"{scenario.pit_loss_value - pit_loss_value:+.1f}s"
-                    print(f"    ○ At {delta_str}: {scenario.best_plan.next_compound} @ L{scenario.best_plan.pit_lap}")
+                    print(
+                        f"    ○ At {delta_str}: {scenario.best_plan.next_compound} "
+                        f"in {scenario.best_plan.pit_lap} lap{'s' if scenario.best_plan.pit_lap != 1 else ''}"
+                    )
         else:
             print(f"  Status: STABLE - recommendation unchanged under ±1-2s variation")
         
@@ -267,7 +282,10 @@ def main() -> None:
             for scenario in stability_assessment.degradation_sensitivity.scenarios:
                 if scenario.recommendation_changed:
                     scenario_label = "optimistic" if "optimistic" in scenario.scenario_name else "pessimistic"
-                    print(f"    ○ {scenario_label.upper()}: {scenario.best_plan.next_compound} @ L{scenario.best_plan.pit_lap}")
+                    print(
+                        f"    ○ {scenario_label.upper()}: {scenario.best_plan.next_compound} "
+                        f"in {scenario.best_plan.pit_lap} lap{'s' if scenario.best_plan.pit_lap != 1 else ''}"
+                    )
         else:
             print(f"  Status: STABLE - recommendation unchanged across degradation scenarios")
         
@@ -298,6 +316,7 @@ def main() -> None:
     print("\nKey points:")
     print("  [OK] Phase 1A data loading (Parquet-first)")
     print("  [OK] Phase 2B hybrid modeling (Miami-specific + 2026 recency blend)")
+    print("  [OK] Pre-3 support surfacing (explicit compound support tiers)")
     print("  [OK] Phase 1B fuel correction (automatic)")
     print("  [OK] Phase 1C piecewise degradation (with cliff detection)")
     print("  [OK] Unified prediction interface")
@@ -309,10 +328,10 @@ def main() -> None:
     print("  [OK] Phase 2D validation available via scripts/run_phase2d_validation.py")
     print("  [OK] Phase 2E calibration (race-local pit loss + cleaner search)")
     print("\nPhase 2B enables:")
-    print("  - Circuit-specific modeling (Miami pit loss, degradation)")
-    print("  - Current-season recency (2026 races before Miami)")
-    print("  - Explicit, inspectable weighting (40% Miami + 60% 2026)")
-    print("  - Blended degradation models (more adaptive strategy)")
+    print("  - Miami-specific circuit anchor for degradation and pit loss")
+    print("  - Current-season recency as bounded support/adjustment")
+    print("  - Explicit support tiers per compound")
+    print("  - Less overclaiming than a flat cross-circuit truth blend")
     print("\nPhase 2C enables:")
     print("  - Scenario-based sensitivity analysis (NOT probabilistic)")
     print("  - Pit-loss assumption testing (±1-2 seconds)")

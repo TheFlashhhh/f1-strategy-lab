@@ -177,6 +177,8 @@ def _identify_scenario_warnings(
     ranked_plans: List[StrategyPlan],
     stability: Optional[StrategyStabilityAssessment],
     model_info: dict,
+    next_support_info: Optional[dict],
+    final_support_info: Optional[dict],
 ) -> List[str]:
     """Return scenario-level warnings worth surfacing in artifacts."""
     warnings: List[str] = []
@@ -193,6 +195,15 @@ def _identify_scenario_warnings(
         model_type = (model_info.get("model_type") or "").upper()
         if samples < 100 or "FALLBACK" in model_type:
             warnings.append("soft-weak-data-signal")
+    for support_info in [next_support_info, final_support_info]:
+        if not support_info:
+            continue
+        tier = support_info.get("support_tier")
+        compound = support_info.get("compound")
+        if tier == "Low":
+            warnings.append(f"{compound.lower()}-low-support-plan")
+        elif tier == "Moderate":
+            warnings.append(f"{compound.lower()}-moderate-support-plan")
     return warnings
 
 
@@ -236,6 +247,16 @@ def run_strategy_validation_suite(
             )
 
         current_model_info = degradation_models.get_model_info(scenario.current_compound)
+        next_support_info = (
+            degradation_models.get_support_info(best_plan.next_compound)
+            if hasattr(degradation_models, "get_support_info")
+            else None
+        )
+        final_support_info = (
+            degradation_models.get_support_info(best_plan.final_compound)
+            if best_plan.final_compound and hasattr(degradation_models, "get_support_info")
+            else None
+        )
         runner_up_gap = None
         if len(ranked_plans) > 1:
             runner_up_gap = float(ranked_plans[1].total_race_time - best_plan.total_race_time)
@@ -246,6 +267,8 @@ def run_strategy_validation_suite(
             ranked_plans=ranked_plans,
             stability=stability,
             model_info=current_model_info,
+            next_support_info=next_support_info,
+            final_support_info=final_support_info,
         )
 
         scenario_results.append(
@@ -266,6 +289,13 @@ def run_strategy_validation_suite(
                 "flip_conditions": stability.flip_conditions if stability else [],
                 "warnings": warnings,
                 "current_compound_model_info": current_model_info,
+                "current_compound_support_info": (
+                    degradation_models.get_support_info(scenario.current_compound)
+                    if hasattr(degradation_models, "get_support_info")
+                    else None
+                ),
+                "next_compound_support_info": next_support_info,
+                "final_compound_support_info": final_support_info,
             }
         )
 
@@ -305,6 +335,7 @@ def summarize_validation_results(
     warning_counts: Counter = Counter()
     unstable_states: defaultdict[str, List[str]] = defaultdict(list)
     pathological_cases: List[dict] = []
+    low_confidence_counts: Counter = Counter()
 
     for result in scenario_results:
         best_plan = result["best_plan"]
@@ -316,6 +347,8 @@ def summarize_validation_results(
 
         for warning in result.get("warnings", []):
             warning_counts[warning] += 1
+            if warning.endswith("-low-support-plan") or warning.endswith("-moderate-support-plan"):
+                low_confidence_counts[warning] += 1
 
         if stability_label in {"Moderately Sensitive", "Fragile"}:
             unstable_states[result["current_compound"]].append(result["scenario_id"])
@@ -351,11 +384,17 @@ def summarize_validation_results(
         for compound in ["SOFT", "MEDIUM", "HARD"]
     }
     soft_info = model_info["SOFT"]
+    soft_support_info = (
+        degradation_models.get_support_info("SOFT")
+        if hasattr(degradation_models, "get_support_info")
+        else {}
+    )
     soft_predictions = prediction_health["SOFT"]
     soft_prediction_invalid = any(value is None for value in soft_predictions.values())
     soft_weak_data_signal = (
-        soft_info.get("samples", 0) < 100
-        or "FALLBACK" in (soft_info.get("model_type") or "").upper()
+        soft_support_info.get("support_tier") == "Low"
+        or soft_info.get("samples", 0) < 100
+        or "FALLBACK" in str(soft_info.get("miami_model_type") or "").upper()
         or warning_counts.get("soft-weak-data-signal", 0) > 0
         or soft_prediction_invalid
     )
@@ -397,6 +436,7 @@ def summarize_validation_results(
         "fragile_by_laps_remaining_bucket": dict(fragile_by_laps_bucket),
         "fragile_by_tyre_age_bucket": dict(fragile_by_age_bucket),
         "warning_counts": dict(warning_counts),
+        "low_confidence_plan_counts": dict(low_confidence_counts),
         "unstable_states_by_current_compound": dict(unstable_states),
         "pathological_cases": pathological_cases,
         "active_model_info": model_info,
@@ -404,6 +444,8 @@ def summarize_validation_results(
         "soft_compound_assessment": {
             "samples": soft_info.get("samples", 0),
             "model_type": soft_info.get("model_type"),
+            "support_tier": soft_support_info.get("support_tier"),
+            "support_reason": soft_support_info.get("support_reason"),
             "weak_data_signal": soft_weak_data_signal,
             "scenario_warning_count": warning_counts.get("soft-weak-data-signal", 0),
             "prediction_invalid": soft_prediction_invalid,

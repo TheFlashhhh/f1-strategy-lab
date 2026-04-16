@@ -4,7 +4,7 @@
 
 Phase 2D adds a canonical validation harness for the strategy system. Instead of relying on a single demo scenario, it runs the existing Phase 2A strategy engine and Phase 2C stability analysis across a compact representative scenario suite and saves inspectable artifacts.
 
-Phase 2E keeps this same harness as the canonical comparison point. The latest artifact therefore reflects the post-calibration pipeline, not the earlier pre-fix run that still had pit-loss collapse and invalid SOFT predictions.
+Phase 2E keeps this same harness as the canonical comparison point. Pre-3 then reruns the same harness after the role-based hybrid redesign and explicit support-tier surfacing.
 
 ---
 
@@ -133,16 +133,16 @@ The JSON artifact contains:
 
 The CSV artifact flattens the scenario-level outputs for quick inspection or spreadsheet use.
 
-### Latest Post-Phase-2E Snapshot
+### Latest Post-Pre-3 Snapshot
 
-Compared with the pre-Phase-2E validation run:
+Compared with the earlier post-Phase-2E run:
 
-- pit-loss baseline moved from `0.00s` to `14.34s` using Miami-only, race-grouped pit-loss calibration
-- one-stop vs two-stop changed from `12 / 0` to `10 / 2`
-- stability changed from `8 Stable / 4 Moderately Sensitive / 0 Fragile` to `9 / 3 / 0`
-- SOFT prediction health moved from invalid (`null` probe predictions) to valid scenario usage
+- pit-loss baseline remains non-degenerate at about `14.34s`
+- the more conservative role-based hybrid returns `12 / 0` one-stop vs two-stop in the current representative suite
+- stability is currently `10 Stable / 2 Moderately Sensitive / 0 Fragile`
+- SOFT is now surfaced as `Moderate` support rather than being treated implicitly like a high-confidence compound
 
-This keeps Phase 2D useful as an evaluation harness while showing exactly how Phase 2E changed the recommendation mix.
+This is a useful reminder that Pre-3 is a defensibility pass, not a realism boost. The recommendations are now easier to explain, but also more conservative.
 
 ---
 
@@ -203,3 +203,4 @@ not as:
 - `scripts/run_phase2d_validation.py`
 - `app/demo_strategy.py`
 - `app/streamlit_app.py`
+- `scripts/run_pre3_backtest.py`

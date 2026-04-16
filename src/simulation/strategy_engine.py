@@ -61,6 +61,13 @@ def _compound_model_info(degradation_models: Union[Dict, object], compound: str)
     return {"compound": compound, "model_type": "LEGACY", "samples": None}
 
 
+def _compound_support_info(degradation_models: Union[Dict, object], compound: str) -> Dict:
+    """Return richer support metadata when available."""
+    if hasattr(degradation_models, "get_support_info"):
+        return degradation_models.get_support_info(compound)
+    return {}
+
+
 def _simulate_stint_time(
     degradation_models: Union[Dict, object],
     compound: str,
@@ -82,7 +89,7 @@ def estimate_stint_feasibility(
     degradation_models: Union[Dict, object],
     compound: str,
     tyre_life: int,
-    laps_remaining: int,
+    stint_laps: int,
     pit_loss_value: float,
 ) -> Tuple[bool, str]:
     """Estimate whether a tyre compound can realistically complete a stint."""
@@ -93,13 +100,15 @@ def estimate_stint_feasibility(
     }
 
     max_viable = usable_tyre_life.get(compound, 30)
-    estimated_stint_length = laps_remaining
+    estimated_stint_length = stint_laps
+    ending_tyre_life = tyre_life + max(estimated_stint_length - 1, 0)
 
-    if estimated_stint_length > max_viable:
+    if ending_tyre_life > max_viable:
         return (
             False,
-            f"Unrealistic: {compound} tyre cannot cover {estimated_stint_length} laps "
-            f"(max viable ~{max_viable} laps)",
+            f"Unrealistic: {compound} would reach tyre age {ending_tyre_life} "
+            f"after {estimated_stint_length} laps from age {tyre_life} "
+            f"(max viable ~{max_viable})",
         )
 
     predicted_time = predict_lap_time(degradation_models, compound, tyre_life)
@@ -111,11 +120,20 @@ def estimate_stint_feasibility(
     support_note = ""
     if isinstance(support_samples, int) and support_samples < 250:
         support_note = f"; low support ({support_samples} laps)"
+    support_tier = _compound_support_info(degradation_models, compound).get("support_tier")
+    if support_tier in {"Low", "Moderate"}:
+        support_note += f"; {support_tier.lower()} confidence"
 
     return (
         True,
-        f"{compound} is viable for {estimated_stint_length} laps (estimated max ~{max_viable}){support_note}",
+        f"{compound} is viable for {estimated_stint_length} laps from tyre age {tyre_life} "
+        f"(ending age {ending_tyre_life}, estimated max ~{max_viable}){support_note}",
     )
+
+
+def _build_feasibility_chain(reasons: List[Tuple[str, str]]) -> str:
+    """Join per-stint feasibility messages into a single explanation."""
+    return "; ".join(f"{label}: {reason}" for label, reason in reasons)
 
 
 def evaluate_one_stop_strategies(
@@ -154,25 +172,55 @@ def evaluate_one_stop_strategies(
             )
             continue
 
-        try:
-            optimal_pit_lap, total_race_time = find_optimal_pit_lap(strategy_df)
-        except ValueError as e:
+        feasible_candidates: List[Tuple[int, float, str]] = []
+        for row in strategy_df.loc[strategy_df["TotalTime"].notna(), ["PitLap", "TotalTime"]].itertuples(index=False):
+            pit_in_laps = int(row.PitLap)
+            remaining_after_pit = laps_remaining - pit_in_laps
+
+            feasible_current, reason_current = estimate_stint_feasibility(
+                degradation_models=degradation_models,
+                compound=current_compound,
+                tyre_life=current_tyre_life,
+                stint_laps=pit_in_laps,
+                pit_loss_value=pit_loss_value,
+            )
+            feasible_next, reason_next = estimate_stint_feasibility(
+                degradation_models=degradation_models,
+                compound=next_compound,
+                tyre_life=1,
+                stint_laps=remaining_after_pit,
+                pit_loss_value=pit_loss_value,
+            )
+
+            if not (feasible_current and feasible_next):
+                continue
+
+            feasible_candidates.append(
+                (
+                    pit_in_laps,
+                    float(row.TotalTime),
+                    _build_feasibility_chain(
+                        [
+                            ("Current stint", reason_current),
+                            (f"{next_compound} finish stint", reason_next),
+                        ]
+                    ),
+                )
+            )
+
+        if not feasible_candidates:
             logger.info(
-                "One-stop strategy %s->%s failed to find optimal pit lap: %s",
+                "One-stop strategy %s->%s skipped because no feasible pit window survived validation.",
                 current_compound,
                 next_compound,
-                e,
             )
             continue
 
-        remaining_after_pit = laps_remaining - optimal_pit_lap
-        feasible, feasibility_reason = estimate_stint_feasibility(
-            degradation_models=degradation_models,
-            compound=next_compound,
-            tyre_life=1,
-            laps_remaining=remaining_after_pit,
-            pit_loss_value=pit_loss_value,
+        optimal_pit_lap, total_race_time, feasibility_reason = min(
+            feasible_candidates,
+            key=lambda candidate: candidate[1],
         )
+        feasible = True
 
         plans.append(
             StrategyPlan(
@@ -186,7 +234,10 @@ def evaluate_one_stop_strategies(
                 total_race_time=total_race_time,
                 feasible=feasible,
                 feasibility_reason=feasibility_reason,
-                explanation=f"Pit to {next_compound} at lap {optimal_pit_lap}, finish on {next_compound}",
+                explanation=(
+                    f"Pit in {optimal_pit_lap} lap{'s' if optimal_pit_lap != 1 else ''} "
+                    f"for {next_compound}, then finish on {next_compound}"
+                ),
                 model_info={
                     "current_compound": _compound_model_info(degradation_models, current_compound),
                     "next_compound": _compound_model_info(degradation_models, next_compound),
@@ -262,6 +313,31 @@ def evaluate_two_stop_strategies(
                     if any(t is None for t in (stint1_time, stint2_time, stint3_time)):
                         continue
 
+                    feasible_1, _ = estimate_stint_feasibility(
+                        degradation_models,
+                        current_compound,
+                        current_tyre_life,
+                        stint_laps=stint1_laps,
+                        pit_loss_value=pit_loss_value,
+                    )
+                    feasible_2, _ = estimate_stint_feasibility(
+                        degradation_models,
+                        next_compound,
+                        1,
+                        stint_laps=stint2_laps,
+                        pit_loss_value=pit_loss_value,
+                    )
+                    feasible_3, _ = estimate_stint_feasibility(
+                        degradation_models,
+                        final_compound,
+                        1,
+                        stint_laps=stint3_laps,
+                        pit_loss_value=pit_loss_value,
+                    )
+
+                    if not (feasible_1 and feasible_2 and feasible_3):
+                        continue
+
                     total_time = (
                         float(stint1_time)
                         + pit_loss_value
@@ -290,26 +366,42 @@ def evaluate_two_stop_strategies(
                 degradation_models,
                 current_compound,
                 current_tyre_life,
-                first_pit_lap,
-                pit_loss_value,
+                stint_laps=first_pit_lap,
+                pit_loss_value=pit_loss_value,
             )
             feasible_2, reason_2 = estimate_stint_feasibility(
                 degradation_models,
                 next_compound,
                 1,
-                stint2_laps,
-                pit_loss_value,
+                stint_laps=stint2_laps,
+                pit_loss_value=pit_loss_value,
             )
             feasible_3, reason_3 = estimate_stint_feasibility(
                 degradation_models,
                 final_compound,
                 1,
-                stint3_laps,
-                pit_loss_value,
+                stint_laps=stint3_laps,
+                pit_loss_value=pit_loss_value,
             )
 
             feasible = feasible_1 and feasible_2 and feasible_3
-            feasibility_reason = "; ".join([reason_1, reason_2, reason_3])
+            feasibility_reason = _build_feasibility_chain(
+                [
+                    ("Current stint", reason_1),
+                    (f"{next_compound} middle stint", reason_2),
+                    (f"{final_compound} finish stint", reason_3),
+                ]
+            )
+
+            if not feasible:
+                logger.info(
+                    "Two-stop strategy %s->%s->%s skipped as infeasible. %s",
+                    current_compound,
+                    next_compound,
+                    final_compound,
+                    feasibility_reason,
+                )
+                continue
 
             one_stop_df = optimize_pit_window(
                 degradation_models=degradation_models,
@@ -338,8 +430,9 @@ def evaluate_two_stop_strategies(
                     feasibility_reason=feasibility_reason,
                     one_stop_estimate=one_stop_time,
                     explanation=(
-                        f"Pit to {next_compound} (lap {first_pit_lap}), "
-                        f"then {final_compound} (lap {second_pit_lap}), finish on {final_compound}"
+                        f"Pit in {first_pit_lap} lap{'s' if first_pit_lap != 1 else ''} for {next_compound}, "
+                        f"then {second_pit_lap - first_pit_lap} lap{'s' if (second_pit_lap - first_pit_lap) != 1 else ''} "
+                        f"later for {final_compound}, finish on {final_compound}"
                     ),
                     model_info={
                         "current_compound": _compound_model_info(degradation_models, current_compound),
@@ -358,18 +451,8 @@ def rank_strategy_plans(
     two_stop_plans: List[StrategyPlan],
     prioritize_feasible: bool = True,
 ) -> List[StrategyPlan]:
-    """Rank all strategy options by total time, with optional feasibility prioritization."""
+    """Rank all feasible strategy options by total time."""
     all_plans = one_stop_plans + two_stop_plans
-
-    if prioritize_feasible:
-        feasible_plans = [p for p in all_plans if p.feasible]
-        infeasible_plans = [p for p in all_plans if not p.feasible]
-
-        feasible_plans.sort(key=lambda p: p.total_race_time)
-        infeasible_plans.sort(key=lambda p: p.total_race_time)
-
-        return feasible_plans + infeasible_plans
-
     all_plans.sort(key=lambda p: p.total_race_time)
     return all_plans
 

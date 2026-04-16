@@ -42,10 +42,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.data.preprocess import build_model_df, clean_laps, detect_pit_stops, select_relevant_columns
+from src.data.preprocess import detect_pit_stops, select_relevant_columns
 from src.data.loader import DataLoader
-from src.features.evaluate_degradation import evaluate_all_degradation
-from src.features.hybrid_modeling import load_or_build_hybrid_dataset
+from src.features.hybrid_modeling import (
+    build_role_based_hybrid_model,
+    load_or_build_hybrid_dataset,
+    summarize_hybrid_context,
+)
 from src.simulation.strategy import (
     estimate_pit_loss_window,
     find_optimal_pit_lap,
@@ -59,42 +62,31 @@ from src.simulation.strategy_sensitivity import assess_strategy_stability
 # ============================================================================
 
 @st.cache_data
-def load_and_prepare_hybrid_data() -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-    """Load Phase 2B hybrid dataset and prepare for analysis."""
+def load_hybrid_context() -> dict:
+    """Load the role-based hybrid context used for reporting."""
     try:
-        df_raw, hybrid_context = load_or_build_hybrid_dataset(project_root=ROOT)
-        context_dict = hybrid_context.to_dict()
+        _, hybrid_context = load_or_build_hybrid_dataset(project_root=ROOT)
+        context_dict = summarize_hybrid_context(hybrid_context)
     except Exception as e:
         st.warning(
             f"Phase 2B hybrid loading failed ({e}). Falling back to Miami historical."
         )
-        from src.data.loader import DataLoader
-        loader = DataLoader(project_root=ROOT)
-        df_raw = loader.load_data(dataset="miami_historical")
         context_dict = {
-            "timestamp": "",
-            "weighting_scheme": "fallback",
-            "active_pools": [{"pool_id": "miami_historical", "name": "Miami Historical"}],
-            "total_samples": len(df_raw),
+            "metadata": {"weighting_scheme": "fallback", "total_active_pools": 1},
+            "data_grouping": [],
+            "blending_strategy": {
+                "method": "miami_only_fallback",
+                "rationale": "Hybrid pools unavailable; using Miami only.",
+            },
+            "total_laps": 0,
         }
-    
-    selected_df = select_relevant_columns(df_raw)
-    pit_df = detect_pit_stops(selected_df)
-    clean_df = clean_laps(pit_df)
-    model_df = build_model_df(clean_df)
-    
-    return pit_df, model_df, context_dict
+    return context_dict
 
 
 @st.cache_data
-def build_integrated_pipeline(pit_df: pd.DataFrame, model_df: pd.DataFrame) -> tuple:
-    """Build complete Phase 1 pipeline with fuel correction and piecewise degradation."""
-    deg_result = evaluate_all_degradation(
-        model_df,
-        use_fuel_correction=True,
-        use_piecewise=True,
-    )
-
+def build_integrated_pipeline() -> tuple:
+    """Build the canonical role-based hybrid model plus Miami pit-loss baseline."""
+    deg_result, _ = build_role_based_hybrid_model(project_root=ROOT)
     pit_loader = DataLoader(project_root=ROOT)
     pit_raw = pit_loader.load_data(dataset="miami_historical")
     pit_source_df = detect_pit_stops(select_relevant_columns(pit_raw))
@@ -134,7 +126,7 @@ def render_page_header():
         This app analyzes tyre degradation and pit-loss data from real F1 races to recommend
         optimal pit timing. It combines:
         
-        - **Phase 2B Hybrid Modeling:** 40% Miami historical data + 60% recent 2026 race data
+        - **Phase 2B / Pre-3 Hybrid Modeling:** Miami anchor + bounded 2026 recency adjustment
         - **Phase 1B Fuel Correction:** Removes fuel-load confound from lap times
         - **Phase 1C Degradation Modeling:** Detects tyre-wear cliffs for better late-stint predictions
         - **Phase 2A Strategy Engine:** Automatically searches one-stop and two-stop options
@@ -198,26 +190,37 @@ def render_stint_timeline(best_plan):
     
     # Stint sequence
     stints_text = f"Current: {tyre_colors.get(best_plan.current_compound, '?')} {best_plan.current_compound} "
-    stints_text += f"→ Pit L{best_plan.pit_lap} → {tyre_colors.get(best_plan.next_compound, '?')} {best_plan.next_compound}"
-    
+    stints_text += (
+        f"→ Pit in {best_plan.pit_lap} lap{'s' if best_plan.pit_lap != 1 else ''} "
+        f"→ {tyre_colors.get(best_plan.next_compound, '?')} {best_plan.next_compound}"
+    )
+
     if best_plan.strategy_type.lower() == "two-stop" and best_plan.second_pit_lap:
-        stints_text += f" → Pit L{best_plan.second_pit_lap} → {tyre_colors.get(best_plan.final_compound, '?')} {best_plan.final_compound}"
+        second_window = best_plan.second_pit_lap - best_plan.pit_lap
+        stints_text += (
+            f" → Pit {second_window} lap{'s' if second_window != 1 else ''} later "
+            f"→ {tyre_colors.get(best_plan.final_compound, '?')} {best_plan.final_compound}"
+        )
     
     stints_text += " → Finish"
     st.caption(stints_text)
 
 
-def render_recommendation(best_plan, pit_loss_value: float):
+def render_recommendation(best_plan, pit_loss_value: float, deg_result):
     """Render the main recommendation section with clear call-to-action."""
     st.subheader("🎯 Recommendation")
     
     # Build human-readable summary sentence
-    action = "Box" if best_plan.pit_lap <= 1 else f"Box on lap {best_plan.pit_lap}"
+    action = "Box now" if best_plan.pit_lap <= 1 else f"Box in {best_plan.pit_lap} laps"
     
     if best_plan.strategy_type.lower() == "one-stop":
         summary = f"{action} for {best_plan.next_compound}. Finish the race on this tyre."
     else:
-        summary = f"{action} for {best_plan.next_compound}, then lap {best_plan.second_pit_lap} for {best_plan.final_compound}."
+        second_window = best_plan.second_pit_lap - best_plan.pit_lap
+        summary = (
+            f"{action} for {best_plan.next_compound}, then {second_window} laps later "
+            f"for {best_plan.final_compound}."
+        )
     
     # Display summary as prominent card
     with st.container(border=True):
@@ -247,11 +250,29 @@ def render_recommendation(best_plan, pit_loss_value: float):
     else:
         st.warning(f"⚠️ {best_plan.feasibility_reason}")
     
+    next_support = deg_result.get_support_info(best_plan.next_compound)
+    support_line = (
+        f"Next tyre support: {next_support.get('support_tier', 'n/a')} "
+        f"({next_support.get('prediction_health', 'unknown')})"
+    )
+    if best_plan.final_compound:
+        final_support = deg_result.get_support_info(best_plan.final_compound)
+        support_line += (
+            f" | Final tyre support: {final_support.get('support_tier', 'n/a')} "
+            f"({final_support.get('prediction_health', 'unknown')})"
+        )
+    st.caption(support_line)
+    if next_support.get("support_tier") in {"Low", "Moderate"}:
+        st.warning(
+            f"{best_plan.next_compound} is currently a {next_support.get('support_tier', '').lower()}-support compound. "
+            f"{next_support.get('support_reason', '')}"
+        )
+
     # Stint timeline visualization
     render_stint_timeline(best_plan)
 
 
-def render_comparison_table(all_ranked_plans, best_plan):
+def render_comparison_table(all_ranked_plans, best_plan, deg_result):
     """Render alternative strategies comparison."""
     st.subheader("📊 Alternative Strategies")
     
@@ -265,10 +286,14 @@ def render_comparison_table(all_ranked_plans, best_plan):
         # Build tyre sequence string
         if plan.strategy_type.lower() == "one-stop":
             tyre_seq = f"{tyre_colors.get(plan.next_compound, '?')} {plan.next_compound}"
-            pit_laps = f"L{plan.pit_lap}"
+            pit_laps = f"in {plan.pit_lap} lap{'s' if plan.pit_lap != 1 else ''}"
         else:
             tyre_seq = f"{tyre_colors.get(plan.next_compound, '?')} {plan.next_compound} → {tyre_colors.get(plan.final_compound, '?')} {plan.final_compound}"
-            pit_laps = f"L{plan.pit_lap}, L{plan.second_pit_lap}"
+            second_window = plan.second_pit_lap - plan.pit_lap
+            pit_laps = (
+                f"in {plan.pit_lap} lap{'s' if plan.pit_lap != 1 else ''}, "
+                f"then {second_window} later"
+            )
         
         strategy_data.append({
             "Rank": "★" if i == 1 else str(i),
@@ -277,7 +302,15 @@ def render_comparison_table(all_ranked_plans, best_plan):
             "Pit Laps": pit_laps,
             "Est. Time": f"{plan.total_race_time:.1f}s",
             "Δ vs Best": delta_str,
-            "Feasible": "✓" if plan.feasible else "⚠"
+            "Feasible": "✓" if plan.feasible else "⚠",
+            "Support": "/".join(
+                [deg_result.get_support_info(plan.next_compound).get("support_tier", "n/a")]
+                + (
+                    [deg_result.get_support_info(plan.final_compound).get("support_tier", "n/a")]
+                    if plan.final_compound
+                    else []
+                )
+            )
         })
     
     df_strats = pd.DataFrame(strategy_data)
@@ -308,17 +341,16 @@ def render_model_status(deg_result):
         
         if info["model_type"]:
             # Build model description
-            if info["is_piecewise"] and info.get("breakpoint_tyre_life"):
-                model_type_str = f"Piecewise | cliff @ {info['breakpoint_tyre_life']}"
-            elif info["is_piecewise"]:
-                model_type_str = "Piecewise"
-            else:
-                model_type_str = "Linear fallback"
+            model_type_str = f"Miami: {info.get('miami_model_type', 'n/a')} | 2026: {info.get('recency_model_type', 'n/a')}"
             
             # Display as card
             with col:
-                st.metric(comp, f"{info['samples']} laps")
+                st.metric(comp, info.get("support_tier", "n/a"))
+                st.caption(f"{info['samples']} total model laps")
                 st.caption(model_type_str)
+                st.caption(
+                    f"Miami {info.get('miami_model_laps', 0)} | 2026 {info.get('recency_model_laps', 0)}"
+                )
         else:
             col.metric(comp, "N/A", help="Insufficient data")
 
@@ -327,39 +359,40 @@ def render_data_context(hybrid_context):
     """Render data source and blending information."""
     st.subheader("📚 Data & Model Context")
     
-    if hybrid_context and hybrid_context.get("active_pools"):
+    if hybrid_context and hybrid_context.get("data_grouping"):
+        grouping = hybrid_context.get("data_grouping", [])
         col1, col2, col3 = st.columns(3)
         
         with col1:
             st.metric(
                 "Active Pools",
-                len(hybrid_context.get("active_pools", [])),
-                help="Number of race datasets being blended"
+                len(grouping),
+                help="Number of source pools in the role-based model"
             )
         
         with col2:
-            total_laps = hybrid_context.get('total_samples', 0)
+            total_laps = hybrid_context.get('total_laps', 0)
             st.metric(
-                "Model Laps",
+                "Source Laps",
                 f"{total_laps:,}",
-                help="Laps used to train degradation models"
+                help="Unweighted laps available across anchor and recency pools"
             )
         
         with col3:
             st.metric(
                 "Blend Strategy",
-                "Recency 60%",
-                help="Current season weighted 60%, historical 40%"
+                "Role-Based",
+                help="Miami anchor with bounded 2026 recency adjustment"
             )
         
         # Show which pools are active with cleaner format
         st.markdown("**Data Pools:**")
-        for pool in hybrid_context.get("active_pools", []):
+        for pool in grouping:
             pool_name = pool['name'].replace(" (2022-2025)", "").replace(" (Pre-Miami)", "")
-            pool_weight = pool.get('recency_weight', '?')
-            pool_laps = pool.get('sample_count', '?')
+            pool_role = pool.get('role', '?')
+            pool_laps = pool.get('sample_counts', {}).get('total_laps', 0)
             st.caption(
-                f"• {pool_name}: {pool_laps:,} laps ({pool_weight})"
+                f"• {pool_name}: {pool_laps:,} laps ({pool_role})"
             )
 
 
@@ -542,7 +575,7 @@ def render_assumptions_footer():
     with st.expander("⚠️ Assumptions & Limitations", expanded=False):
         st.markdown("""
         **Model Assumptions:**
-        - Linear or piecewise-linear tyre degradation
+        - Miami-anchored degradation with bounded 2026 recency adjustment
         - Steady Miami pit-loss baseline calibrated from historical race windows
         - Constant fuel burn effect across the race
         - Green-flag conditions throughout
@@ -550,8 +583,8 @@ def render_assumptions_footer():
         **Limitations:**
         - No traffic or overtaking model
         - No adaptive strategy (e.g., responding to safety cars)
-        - Based on historical Miami + 2026 race data only
-        - SOFT compound has limited data (~33 laps); use with caution
+        - Based on Miami historical data plus a bounded 2026 support signal
+        - SOFT is currently only moderate-support; treat SOFT-heavy plans with caution
         - Two-stop strategies are evaluated naively; real strategy depends on position/gaps
         
         **What this model IS:**
@@ -575,8 +608,8 @@ def main():
     render_page_header()
     
     try:
-        pit_df, model_df, hybrid_context = load_and_prepare_hybrid_data()
-        deg_result, pit_loss_value, pit_sample_count = build_integrated_pipeline(pit_df, model_df)
+        hybrid_context = load_hybrid_context()
+        deg_result, pit_loss_value, pit_sample_count = build_integrated_pipeline()
     except Exception as exc:
         st.error(f"❌ Failed to initialize pipeline: {exc}")
         st.stop()
@@ -604,11 +637,11 @@ def main():
     )
 
     # === STRATEGY SECTION ===
-    render_recommendation(best_plan, pit_loss_value)
+    render_recommendation(best_plan, pit_loss_value, deg_result)
     st.divider()
     
     # === ALTERNATIVES SECTION ===
-    render_comparison_table(all_ranked_plans, best_plan)
+    render_comparison_table(all_ranked_plans, best_plan, deg_result)
     st.divider()
     
     # === MODEL & DATA CONTEXT SECTION ===

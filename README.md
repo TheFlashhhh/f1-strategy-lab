@@ -1,6 +1,6 @@
 # F1 Strategy Lab
 
-Real-time pit strategy recommendations using Phase 1 empirical modeling and Phase 2 automatic strategy optimization. Built on real Formula 1 race data with hybrid degradation models blending historical and current-season information.
+Real-time pit strategy recommendations using Phase 1 empirical modeling and Phase 2 automatic strategy optimization. Built on real Formula 1 race data with a Miami-anchored, role-based hybrid degradation model plus an honest held-out Miami backtest.
 
 <div align="center">
   <pre>
@@ -51,10 +51,11 @@ streamlit run app/streamlit_app.py
 
 ### Phase 2: Strategy Optimization
 - ✅ **Phase 2A:** Automatic strategy search and recommendation (one-stop vs two-stop, ranked by time)
-- ✅ **Phase 2B:** Hybrid data blending (Miami-specific + current-season recency, 40%-60% weighting)
+- ✅ **Phase 2B:** Hybrid data context (Miami anchor + current-season recency support)
 - ✅ **Phase 2C:** Strategy sensitivity analysis (pit-loss & degradation scenario testing, stability classification)
 - ✅ **Phase 2D:** Broader validation / robustness evaluation across a representative scenario suite
 - ✅ **Phase 2E:** Strategy search refinement / calibration (pit-loss fix, SOFT cleanup, bounded two-stop search)
+- ✅ **Pre-3:** Defensibility upgrade (explicit support tiers, role-based hybrid predictions, held-out Miami backtest)
 
 ### Unified Pipeline
 ```python
@@ -151,6 +152,9 @@ python app/demo_strategy.py
 # Phase 2D: Broader validation / robustness evaluation
 python scripts/run_phase2d_validation.py
 
+# Pre-3: Compound support audit + held-out Miami backtest
+python scripts/run_pre3_backtest.py
+
 # Phase 2E: Current calibrated strategy pipeline demo
 python app/demo_strategy.py
 
@@ -228,8 +232,8 @@ Search pit-window space and recommend the strategy minimizing total race time.
 
 **Key files:** `src/simulation/strategy.py`, `src/simulation/strategy_engine.py`
 
-### Phase 2B: Hybrid Modeling
-Blend Miami-specific historical data (40%) with current-season 2026 races (60%).
+### Phase 2B / Pre-3: Role-Based Hybrid Modeling
+Use Miami historical data as the circuit anchor and treat current-season 2026 races as a bounded recency adjustment/support signal rather than direct Miami truth.
 
 ### Phase 2C: Sensitivity Analysis
 Stress-test the baseline recommendation under pit-loss and degradation variations and label it as Stable, Moderately Sensitive, or Fragile.
@@ -247,6 +251,12 @@ Calibrate the strategy stack after broader validation by:
 - restoring a non-degenerate Miami pit-loss baseline
 - cleaning up SOFT model-health behavior
 - replacing the rough two-stop heuristic with a bounded search over valid pit-lap pairs
+
+### Pre-3: Defensibility Upgrade
+Improve how the project presents and audits model trustworthiness by:
+- adding explicit compound support tiers
+- replacing flat sample-level blend claims with a role-based Miami-anchor design
+- adding one honest held-out Miami decision-support backtest
 
 ---
 
@@ -267,8 +277,10 @@ Calibrate the strategy stack after broader validation by:
 - **Deterministic:** No uncertainty quantification
 - **No traffic model:** Doesn't account for overtaking or position effects
 - **No safety cars:** Doesn't respond to VSCs or full-course yellows
-- **SOFT compound:** Phase 2E removed the invalid-prediction path, but SOFT should still be treated as lower-confidence than MEDIUM/HARD
-- **Validation scope:** Phase 2D is representative scenario validation, not historical backtesting or Monte Carlo race simulation
+- **SOFT compound:** SOFT is now surfaced with an explicit support tier and should still be treated as less trustworthy than MEDIUM/HARD
+- **Hybrid modeling:** 2026 non-Miami data is used as bounded recency support, not as direct Miami degradation truth
+- **Backtesting scope:** The Pre-3 backtest is one honest held-out Miami decision-support check, not a full historical performance guarantee
+- **Validation scope:** Phase 2D is representative scenario validation, not Monte Carlo race simulation
 
 ---
 
@@ -285,6 +297,7 @@ Calibrate the strategy stack after broader validation by:
 - ✅ Phase 2C: Scenario-based sensitivity analysis
 - ✅ Phase 2D: Representative robustness validation
 - ✅ Phase 2E: Strategy search refinement / calibration
+- ✅ Pre-3: Defensibility upgrade
 
 ---
 
@@ -310,6 +323,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 - [Phase 2C: Sensitivity Analysis](docs/phase2c_sensitivity_analysis.md)
 - [Phase 2D: Broader Validation](docs/phase2d_validation.md)
 - [Phase 2E: Strategy Refinement](docs/phase2e_strategy_refinement.md)
+- [Pre-3: Defensibility Upgrade](docs/pre3_defensibility_upgrade.md)
 
 ---
 

@@ -1,402 +1,434 @@
-"""Phase 2B: Hybrid Data/Model Context for Miami-2026 Strategy Blend.
+"""Phase 2B / Pre-3 hybrid modeling helpers.
 
-This module implements a structured hybrid modeling approach that combines:
-1. Miami historical prior (2022–2025)
-   - Circuit-specific context
-   - Long-term degradation/pit-loss baseline
-   - Medium recency weight
-   
-2. Current-season 2026 completed races prior
-   - Highest recency weight (most recent car/tyre behavior)
-   - Current season performance
-   - Used for performance adjustments
-   
-3. Optional broader historical support data
-   - Non-Miami historical races (if available)
-   - Lower-weight support for sample size
-   - Fallback if Miami/2026 data insufficient
-
-**Design Philosophy:**
-- Explicit, reviewable weighting (not hidden heuristics)
-- Each pool has a defined role
-- Weights are transparent and configurable
-- Outputs are inspectable and auditable
+This module now treats Miami historical data as the circuit anchor and uses
+current-season 2026 races only as a bounded recency adjustment at prediction
+time. It no longer presents a replicated cross-circuit row pool as Miami truth.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
+from src.data.loader import DataLoader
+from src.data.preprocess import build_model_df, clean_laps, detect_pit_stops, select_relevant_columns
+from src.features.evaluate_degradation import DegradationEvaluationResult, evaluate_all_degradation
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class DataPoolMetadata:
-    """Metadata and configuration for a data pool (race group)."""
-    
+    """Metadata and configuration for a data pool."""
+
     pool_id: str
-    """Unique identifier: 'miami_historical', 'season_2026_pre_miami', etc."""
-    
     name: str
-    """Human-readable name: 'Miami Historical (2022-2025)'."""
-    
     years: List[int]
-    """Years included in this pool."""
-    
     circuits: List[str]
-    """Circuits included (e.g., ['Miami'])."""
-    
     regulation_era: str
-    """Regulation era (e.g., '2022', '2024-2025', '2026')."""
-    
     recency_weight: float
-    """Raw weight factor (before normalization)."""
-    
     circuit_role: str
-    """Role of this pool: 'miami_specific', 'current_season', 'historical_support'."""
-    
     target_race_context: str
-    """What race this data used for modeling: 'Miami' or 'General'."""
-    
     description: str
-    """Purpose/rationale for this pool."""
-    
     sample_count: int = 0
-    """Number of laps in this pool (filled after load)."""
-    
     compound_samples: Dict[str, int] = field(default_factory=dict)
-    """Samples per compound: {'SOFT': 100, 'MEDIUM': 200, 'HARD': 300}."""
-    
     excluded_reason: Optional[str] = None
-    """If not used, why excluded."""
 
 
 @dataclass
 class HybridModelingContext:
-    """Configuration for hybrid data/model blending."""
-    
+    """Configuration and runtime summary for the role-based hybrid stack."""
+
     pools_config: List[DataPoolMetadata]
-    """Configuration for each data pool to attempt loading."""
-    
     active_pools: List[DataPoolMetadata] = field(default_factory=list)
-    """Pools that were successfully loaded (filled by build process)."""
-    
     blended_data: Optional[pd.DataFrame] = None
-    """Combined/weighted data (filled by build process)."""
-    
-    weighting_scheme: str = "explicit_recency"
-    """Name of weighting strategy used: 'explicit_recency', 'equal', etc."""
-    
+    weighting_scheme: str = "role_based_adjustment"
     timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    """When this context was created."""
-    
     notes: str = ""
-    """Optional notes about the modeling context."""
-    
+
     def to_dict(self) -> dict:
-        """Convert to dict for JSON serialization."""
         return {
             "timestamp": self.timestamp,
             "weighting_scheme": self.weighting_scheme,
             "active_pools": [
                 {
-                    "pool_id": p.pool_id,
-                    "name": p.name,
-                    "years": p.years,
-                    "circuits": p.circuits,
-                    "recency_weight": p.recency_weight,
-                    "circuit_role": p.circuit_role,
-                    "sample_count": p.sample_count,
-                    "compound_samples": p.compound_samples,
+                    "pool_id": pool.pool_id,
+                    "name": pool.name,
+                    "years": pool.years,
+                    "circuits": pool.circuits,
+                    "recency_weight": pool.recency_weight,
+                    "circuit_role": pool.circuit_role,
+                    "sample_count": pool.sample_count,
+                    "compound_samples": pool.compound_samples,
                 }
-                for p in self.active_pools
+                for pool in self.active_pools
             ],
-            "total_samples": sum(p.sample_count for p in self.active_pools),
-            "total_compounds": sum(len(p.compound_samples) for p in self.active_pools),
+            "total_samples": sum(pool.sample_count for pool in self.active_pools),
             "notes": self.notes,
         }
 
 
+@dataclass
+class CompoundPoolSupport:
+    """Support metrics for one compound inside one data pool."""
+
+    raw_laps: int
+    model_laps: int
+    raw_stints: int
+    model_stints: int
+    raw_races: int
+    model_races: int
+    model_type: Optional[str]
+    prediction_valid: bool
+
+
+@dataclass
+class CompoundSupportSummary:
+    """Combined support summary for one compound."""
+
+    compound: str
+    support_tier: str
+    support_reason: str
+    prediction_health: str
+    miami: CompoundPoolSupport
+    recency: CompoundPoolSupport
+    combined_raw_laps: int
+    combined_model_laps: int
+    combined_model_stints: int
+    combined_model_races: int
+    hybrid_adjustment_weight: float
+    warnings: List[str]
+
+
 def create_default_hybrid_context() -> HybridModelingContext:
-    """Create default Phase 2B hybrid modeling context.
-    
-    **Strategy:**
-    - Miami historical: weight 0.4 (circuit-specific, medium recency)
-    - 2026 pre-Miami: weight 0.6 (current season, highest recency)
-    - Broader historical: weight 0.1 if available (fallback support)
-    
-    **Rationale:**
-    Miami data is valuable for circuit-specific context (pit loss, degradation patterns).
-    But 2026 races are more recent and reflect current car/tyre performance.
-    By blending 60% recency + 40% circuit-specific, we get adaptive strategy.
-    
-    Returns:
-        HybridModelingContext with recommended pools.
-    """
+    """Create the default role-based hybrid context."""
     pools = [
         DataPoolMetadata(
             pool_id="miami_historical",
-            name="Miami Historical (2022–2025)",
+            name="Miami Historical (2022-2025)",
             years=[2022, 2023, 2024, 2025],
             circuits=["Miami"],
-            regulation_era="2022-2024",
-            recency_weight=0.4,
-            circuit_role="miami_specific",
+            regulation_era="2022-2025",
+            recency_weight=0.0,
+            circuit_role="miami_anchor",
             target_race_context="Miami",
-            description="Miami-specific degradation, pit-loss, and strategy baseline",
+            description="Circuit anchor for Miami degradation and pit-loss behavior.",
         ),
         DataPoolMetadata(
             pool_id="season_2026_pre_miami",
             name="2026 Pre-Miami Races (Australia, China, Japan, etc.)",
             years=[2026],
-            circuits=["Generic"],  # Will be filled from data
+            circuits=["Australia", "China", "Japan"],
             regulation_era="2026",
-            recency_weight=0.6,
-            circuit_role="current_season",
+            recency_weight=1.0,
+            circuit_role="recency_adjustment",
             target_race_context="General",
-            description="Current-season performance data (highest recency weight)",
+            description="Current-season recency support used only as a bounded adjustment.",
         ),
     ]
-    
     return HybridModelingContext(
         pools_config=pools,
-        weighting_scheme="explicit_recency",
-        notes="Default Phase 2B hybrid context: 40% Miami-specific + 60% 2026 recency",
+        weighting_scheme="role_based_adjustment",
+        notes=(
+            "Miami remains the circuit anchor. Non-Miami 2026 data provides a bounded "
+            "recency adjustment and support signal at prediction time."
+        ),
     )
 
 
-def load_data_pool(
-    dataset: str,
-    project_root: Path | str = ".",
-) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
-    """Load a single data pool by name.
-    
-    Args:
-        dataset: Dataset name ('miami_historical', 'season_2026_pre_miami', etc.)
-        project_root: Path to project root
-        
-    Returns:
-        (DataFrame or None, error_message or None)
-        If successful: returns (DataFrame, None)
-        If failed: returns (None, error_message)
-    """
-    from src.data.loader import DataLoader
-    
+def load_data_pool(dataset: str, project_root: Path | str = ".") -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+    """Load one canonical dataset with error capture."""
     try:
         loader = DataLoader(project_root=project_root)
         df = loader.load_data(dataset=dataset, fallback=False)
-        
-        if df is None or len(df) == 0:
+        if df is None or df.empty:
             return None, f"Dataset {dataset} returned empty"
-        
-        # Ensure required columns are present (handle both PascalCase from DataLoader and lowercase)
-        # The DataLoader._normalize_schema converts to PascalCase for backward compatibility
-        required_cols = ["Compound", "TyreLife", "LapTime", "Driver", "Stint"]
-        lowercase_cols = [c.lower() for c in required_cols]
-        
-        # Check for either PascalCase or lowercase
-        has_required = all(
-            (c in df.columns) or (c.lower() in df.columns)
-            for c in required_cols
-        )
-        
-        if not has_required:
-            missing_cols = [c for c in required_cols if c not in df.columns and c.lower() not in df.columns]
-            logger.warning(
-                f"  ⚠ {dataset}: Missing columns {missing_cols}; "
-                "this pool may not be usable for modeling"
-            )
-            return None, f"Missing columns: {missing_cols}"
-        
+        required = {"Compound", "TyreLife", "LapTime", "Driver", "Stint"}
+        if not required.issubset(df.columns):
+            return None, f"Missing columns: {sorted(required - set(df.columns))}"
         return df, None
-    except Exception as e:
-        return None, str(e)
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _prepare_pool_model_df(df: pd.DataFrame) -> pd.DataFrame:
+    selected = select_relevant_columns(df)
+    pit_df = detect_pit_stops(selected)
+    clean_df = clean_laps(pit_df)
+    return build_model_df(clean_df)
 
 
 def build_hybrid_dataset(
     context: HybridModelingContext,
     project_root: Path | str = ".",
-    apply_weights: bool = True,
+    apply_weights: bool = False,
 ) -> HybridModelingContext:
-    """Load all pools in context and blend with weighting.
-    
-    Args:
-        context: HybridModelingContext with pools_config
-        project_root: Path to project root
-        apply_weights: If True, duplicate samples per pool weight (optional; see note below)
-        
-    Returns:
-        Updated context with active_pools and blended_data filled
-        
-    **Note on weighting:**
-    We implement weighting at the sample level by duplicating/downsampling laps:
-    - If weight > 1.0, duplicate (upweight)
-    - If weight < 1.0, random sample (downweight)
-    This ensures degradation models trained on blended data reflect pool importance.
-    
-    Alternative: weight models after fitting (per-pool alpha weighting).
-    We use sample-level for simplicity and transparency.
+    """Load the configured pools for inspection/context.
+
+    ``apply_weights`` is retained for compatibility but ignored. The resulting
+    ``blended_data`` is only a raw concatenation for context/audit and is not
+    the canonical modeling source anymore.
     """
+    del apply_weights
+
     project_root = Path(project_root)
-    active_pools = []
-    all_dfs = []
-    
-    # Load each pool
-    for pool_config in context.pools_config:
-        logger.info(f"Attempting to load pool: {pool_config.pool_id}")
-        
-        df, error = load_data_pool(
-            dataset=pool_config.pool_id,
-            project_root=project_root,
-        )
-        
+    active_pools: List[DataPoolMetadata] = []
+    raw_frames: List[pd.DataFrame] = []
+
+    for pool in context.pools_config:
+        df, error = load_data_pool(pool.pool_id, project_root=project_root)
         if error:
-            logger.warning(f"  ✗ Failed: {error}")
-            pool_config.excluded_reason = error
+            pool.excluded_reason = error
+            logger.warning("Hybrid pool %s excluded: %s", pool.pool_id, error)
             continue
-        
-        # Record metadata
-        pool_config.sample_count = len(df)
-        
-        # Safely get compound samples (use PascalCase from DataLoader)
-        try:
-            compound_col = "Compound" if "Compound" in df.columns else "compound"
-            if compound_col in df.columns:
-                pool_config.compound_samples = {
-                    compound: len(df[df[compound_col] == compound])
-                    for compound in df[compound_col].unique()
-                }
-            else:
-                logger.warning(f"  ⚠ {pool_config.pool_id}: No compound column; skipping breakdown")
-                pool_config.compound_samples = {}
-        except Exception as e:
-            logger.warning(f"  ⚠ {pool_config.pool_id}: Failed to compute compound samples: {e}")
-            pool_config.compound_samples = {}
-        
-        # Add pool identifier column (for transparency/audit)
-        df = df.copy()
-        df["__phase2b_pool_id"] = pool_config.pool_id
-        
-        # Store pool with weight annotation
-        all_dfs.append({
-            "df": df,
-            "pool_id": pool_config.pool_id,
-            "weight": pool_config.recency_weight,
-            "metadata": pool_config,
-        })
-        
-        active_pools.append(pool_config)
-        logger.info(
-            f"  ✓ Loaded {len(df)} laps from {pool_config.pool_id} "
-            f"(weight: {pool_config.recency_weight})"
-        )
-    
-    # Normalize weights
-    if all_dfs:
-        total_weight = sum(item["weight"] for item in all_dfs)
-        for item in all_dfs:
-            item["normalized_weight"] = item["weight"] / total_weight
-            logger.info(
-                f"  {item['pool_id']}: normalized weight {item['normalized_weight']:.2%}"
-            )
-    
-    # Log explicit pool composition BEFORE weighting (for audit trail)
-    logger.info("\n" + "=" * 70)
-    logger.info("HYBRID DATA POOL COMPOSITION BEFORE WEIGHTING")
-    logger.info("=" * 70)
-    total_raw_laps = sum(item["df"].shape[0] for item in all_dfs)
-    for item in all_dfs:
-        n_laps = item["df"].shape[0]
-        raw_pct = 100.0 * n_laps / total_raw_laps if total_raw_laps > 0 else 0.0
-        norm_weight = item["normalized_weight"]
-        logger.info(
-            f"  {item['pool_id']:30s} {n_laps:7,d} laps "
-            f"({raw_pct:5.1f}% of raw) | weight={item['weight']} → {norm_weight:.1%}"
-        )
-    logger.info(f"  {'TOTAL RAW':30s} {total_raw_laps:7,d} laps")
-    logger.info("=" * 70 + "\n")
-    
-    # Blend with weighting (optional: duplicate/downsample to reflect weights)
-    if all_dfs and apply_weights:
-        logger.info("HYBRID WEIGHTING & BLENDING (Sample-Level Replication)")
-        logger.info("=" * 70)
-        blended_parts = []
-        total_blended_laps = 0
-        
-        for item in all_dfs:
-            df = item["df"]
-            norm_weight = item["normalized_weight"]
-            pool_id = item['pool_id']
-            
-            # If weight > 1.0, duplicate; if < 1.0, downsample
-            # This is approximate but transparent and reproducible
-            if norm_weight > 0.5:  # Oversample
-                repeat_factor = int(np.round(norm_weight * 10))
-                df_replicated = pd.concat([df] * repeat_factor, ignore_index=True)
-                blended_parts.append(df_replicated)
-                n_before = len(df)
-                n_after = len(df_replicated)
-                total_blended_laps += n_after
-                logger.info(
-                    f"  {pool_id:30s} weight={norm_weight:.1%} "
-                    f"→ replicate ×{repeat_factor:2d}  "
-                    f"{n_before:7,d} → {n_after:7,d} laps"
-                )
-            else:  # Downsample
-                sample_size = max(1, int(len(df) * norm_weight * 10))
-                df_sampled = df.sample(n=min(sample_size, len(df)), random_state=42)
-                blended_parts.append(df_sampled)
-                n_before = len(df)
-                n_after = len(df_sampled)
-                total_blended_laps += n_after
-                logger.info(
-                    f"  {pool_id:30s} weight={norm_weight:.1%} "
-                    f"→ downsample    "
-                    f"{n_before:7,d} → {n_after:7,d} laps"
-                )
-        
-        blended_data = pd.concat(blended_parts, ignore_index=True)
-        logger.info("=" * 70)
-        logger.info(f"  TOTAL BLENDED: {len(blended_data):,d} laps")
-        logger.info("=" * 70 + "\n")
-    elif all_dfs:
-        # No sample-level weighting, just concatenate
-        logger.info("BLENDING POOLS (No Sample-Level Reweighting)")
-        logger.info("=" * 70)
-        blended_data = pd.concat([item["df"] for item in all_dfs], ignore_index=True)
-        logger.info(f"  TOTAL CONCATENATED: {len(blended_data):,d} laps")
-        logger.info("=" * 70 + "\n")
-    else:
-        blended_data = None
-    
-    # Update context
+
+        pool.sample_count = int(len(df))
+        pool.compound_samples = {
+            str(compound): int(count)
+            for compound, count in df["Compound"].fillna("nan").value_counts(dropna=False).items()
+        }
+
+        frame = df.copy()
+        frame["__phase2b_pool_id"] = pool.pool_id
+        raw_frames.append(frame)
+        active_pools.append(pool)
+
     context.active_pools = active_pools
-    context.blended_data = blended_data
-    
+    context.blended_data = pd.concat(raw_frames, ignore_index=True) if raw_frames else None
     return context
+
+
+def _count_unique_units(df: pd.DataFrame) -> Tuple[int, int]:
+    """Return unique stint and race counts for a compound slice."""
+    if df.empty:
+        return 0, 0
+    stint_cols = [col for col in ["season", "event_name", "session_name", "Driver", "Stint"] if col in df.columns]
+    race_cols = [col for col in ["season", "event_name", "session_name"] if col in df.columns]
+    stint_count = int(df[stint_cols].drop_duplicates().shape[0]) if stint_cols else 0
+    race_count = int(df[race_cols].drop_duplicates().shape[0]) if race_cols else 0
+    return stint_count, race_count
+
+
+def _prediction_valid(model: DegradationEvaluationResult, compound: str) -> bool:
+    probes = [model.predict_lap_time(compound, tyre_life) for tyre_life in (1, 5, 10)]
+    return all(value is not None and np.isfinite(value) for value in probes)
+
+
+def _build_pool_support(
+    raw_df: pd.DataFrame,
+    model_df: pd.DataFrame,
+    model: DegradationEvaluationResult,
+    compound: str,
+) -> CompoundPoolSupport:
+    raw_slice = raw_df[raw_df["Compound"] == compound].copy()
+    model_slice = model_df[model_df["Compound"] == compound].copy()
+    raw_stints, raw_races = _count_unique_units(raw_slice)
+    model_stints, model_races = _count_unique_units(model_slice)
+    info = model.get_model_info(compound)
+    return CompoundPoolSupport(
+        raw_laps=int(len(raw_slice)),
+        model_laps=int(len(model_slice)),
+        raw_stints=raw_stints,
+        model_stints=model_stints,
+        raw_races=raw_races,
+        model_races=model_races,
+        model_type=info.get("model_type"),
+        prediction_valid=_prediction_valid(model, compound),
+    )
+
+
+def _support_reason_and_tier(compound: str, miami: CompoundPoolSupport, recency: CompoundPoolSupport) -> Tuple[str, str]:
+    """Return explicit support tier and rationale."""
+    combined_model_laps = miami.model_laps + recency.model_laps
+    combined_model_stints = miami.model_stints + recency.model_stints
+    combined_model_races = miami.model_races + recency.model_races
+    prediction_valid = miami.prediction_valid or recency.prediction_valid
+
+    if (
+        prediction_valid
+        and miami.model_laps >= 300
+        and combined_model_laps >= 600
+        and miami.model_races >= 3
+        and combined_model_stints >= 20
+    ):
+        return (
+            "High",
+            (
+                f"High support: Miami anchor has {miami.model_laps} model laps across "
+                f"{miami.model_races} races, with {combined_model_laps} total model laps "
+                f"and {combined_model_stints} model stints across anchor+recency pools."
+            ),
+        )
+
+    if (
+        prediction_valid
+        and miami.model_laps >= 50
+        and combined_model_laps >= 150
+        and miami.model_races >= 2
+        and combined_model_stints >= 8
+    ):
+        return (
+            "Moderate",
+            (
+                f"Moderate support: Miami anchor is usable but limited "
+                f"({miami.model_laps} Miami model laps; {combined_model_laps} total model laps; "
+                f"{combined_model_stints} model stints)."
+            ),
+        )
+
+    return (
+        "Low",
+        (
+            f"Low support: anchor+support data are thin or prediction health is weak "
+            f"({miami.model_laps} Miami model laps; {combined_model_laps} total model laps; "
+            f"{combined_model_stints} model stints; prediction valid={prediction_valid})."
+        ),
+    )
+
+
+def _adjustment_weight_for_tier(support_tier: str) -> float:
+    return {"High": 0.20, "Moderate": 0.35, "Low": 0.55}.get(support_tier, 0.35)
+
+
+def _adjustment_cap(compound: str) -> float:
+    return {"SOFT": 3.0, "MEDIUM": 1.5, "HARD": 1.5}.get(compound, 2.0)
+
+
+class RoleBasedHybridModel:
+    """Miami-anchor degradation model with bounded recency adjustment."""
+
+    def __init__(
+        self,
+        miami_models: DegradationEvaluationResult,
+        recency_models: DegradationEvaluationResult,
+        support_summary: Dict[str, CompoundSupportSummary],
+    ) -> None:
+        self.miami_models = miami_models
+        self.recency_models = recency_models
+        self.support_summary = support_summary
+        self.compounds = ("SOFT", "MEDIUM", "HARD")
+
+    def predict_lap_time(self, compound: str, tyre_life: int) -> Optional[float]:
+        support = self.support_summary.get(compound)
+        miami_pred = self.miami_models.predict_lap_time(compound, tyre_life)
+        recency_pred = self.recency_models.predict_lap_time(compound, tyre_life)
+
+        if miami_pred is None and recency_pred is None:
+            return None
+        if miami_pred is None:
+            return recency_pred
+        if recency_pred is None:
+            return miami_pred
+
+        adjustment_weight = support.hybrid_adjustment_weight if support else 0.35
+        weighted_delta = adjustment_weight * (recency_pred - miami_pred)
+        bounded_delta = float(np.clip(weighted_delta, -_adjustment_cap(compound), _adjustment_cap(compound)))
+        return float(miami_pred + bounded_delta)
+
+    def get_model_info(self, compound: str) -> Dict:
+        support = self.support_summary.get(compound)
+        miami_info = self.miami_models.get_model_info(compound)
+        recency_info = self.recency_models.get_model_info(compound)
+        if support is None:
+            return {
+                "compound": compound,
+                "model_type": None,
+                "support_tier": "Low",
+                "samples": 0,
+                "is_piecewise": False,
+                "breakpoint_tyre_life": None,
+            }
+
+        return {
+            "compound": compound,
+            "model_type": "ROLE-BASED HYBRID",
+            "support_tier": support.support_tier,
+            "support_reason": support.support_reason,
+            "prediction_health": support.prediction_health,
+            "samples": support.combined_model_laps,
+            "miami_model_laps": support.miami.model_laps,
+            "recency_model_laps": support.recency.model_laps,
+            "hybrid_adjustment_weight": support.hybrid_adjustment_weight,
+            "miami_model_type": miami_info.get("model_type"),
+            "recency_model_type": recency_info.get("model_type"),
+            "is_piecewise": bool(miami_info.get("is_piecewise") or recency_info.get("is_piecewise")),
+            "breakpoint_tyre_life": miami_info.get("breakpoint_tyre_life") or recency_info.get("breakpoint_tyre_life"),
+            "warnings": list(support.warnings),
+        }
+
+    def get_support_info(self, compound: str) -> Dict:
+        support = self.support_summary.get(compound)
+        return asdict(support) if support else {}
+
+    def to_dict(self) -> dict:
+        return {compound: asdict(summary) for compound, summary in self.support_summary.items()}
+
+
+def build_role_based_hybrid_model(
+    project_root: Path | str = ".",
+    miami_raw_override: Optional[pd.DataFrame] = None,
+    recency_raw_override: Optional[pd.DataFrame] = None,
+) -> Tuple[RoleBasedHybridModel, HybridModelingContext]:
+    """Build the canonical role-based hybrid degradation model."""
+    project_root = Path(project_root)
+    context = build_hybrid_dataset(create_default_hybrid_context(), project_root=project_root)
+    loader = DataLoader(project_root=project_root)
+
+    miami_raw = miami_raw_override if miami_raw_override is not None else loader.load_data("miami_historical")
+    recency_raw = recency_raw_override if recency_raw_override is not None else loader.load_data("season_2026_pre_miami")
+
+    miami_model_df = _prepare_pool_model_df(miami_raw)
+    recency_model_df = _prepare_pool_model_df(recency_raw)
+
+    miami_models = evaluate_all_degradation(miami_model_df, use_fuel_correction=True, use_piecewise=True)
+    recency_models = evaluate_all_degradation(recency_model_df, use_fuel_correction=True, use_piecewise=True)
+
+    support_summary: Dict[str, CompoundSupportSummary] = {}
+    for compound in ("SOFT", "MEDIUM", "HARD"):
+        miami_support = _build_pool_support(miami_raw, miami_model_df, miami_models, compound)
+        recency_support = _build_pool_support(recency_raw, recency_model_df, recency_models, compound)
+        support_tier, support_reason = _support_reason_and_tier(compound, miami_support, recency_support)
+        warnings: List[str] = []
+        if support_tier == "Low":
+            warnings.append("low_support")
+        elif support_tier == "Moderate":
+            warnings.append("moderate_support")
+        if not miami_support.prediction_valid:
+            warnings.append("miami_anchor_prediction_weak")
+        if compound == "SOFT":
+            warnings.append("soft_requires_caution")
+
+        support_summary[compound] = CompoundSupportSummary(
+            compound=compound,
+            support_tier=support_tier,
+            support_reason=support_reason,
+            prediction_health="valid" if (miami_support.prediction_valid or recency_support.prediction_valid) else "fragile",
+            miami=miami_support,
+            recency=recency_support,
+            combined_raw_laps=miami_support.raw_laps + recency_support.raw_laps,
+            combined_model_laps=miami_support.model_laps + recency_support.model_laps,
+            combined_model_stints=miami_support.model_stints + recency_support.model_stints,
+            combined_model_races=miami_support.model_races + recency_support.model_races,
+            hybrid_adjustment_weight=_adjustment_weight_for_tier(support_tier),
+            warnings=warnings,
+        )
+
+    return RoleBasedHybridModel(miami_models, recency_models, support_summary), context
 
 
 def summarize_hybrid_context(
     context: HybridModelingContext,
     output_path: Optional[Path | str] = None,
 ) -> Dict:
-    """Generate a summary of hybrid modeling context.
-    
-    Args:
-        context: Populated HybridModelingContext
-        output_path: If provided, save summary as JSON to this path
-        
-    Returns:
-        Summary dict
-    """
+    """Generate a role-based summary for UI/docs/artifacts."""
+    total_samples = int(sum(pool.sample_count for pool in context.active_pools))
     summary = {
         "metadata": {
             "timestamp": context.timestamp,
@@ -405,54 +437,45 @@ def summarize_hybrid_context(
         },
         "data_grouping": [
             {
-                "pool_id": p.pool_id,
-                "name": p.name,
-                "years": p.years,
-                "circuits": p.circuits,
-                "role": p.circuit_role,
-                "target_race_context": p.target_race_context,
-                "recency_weight": p.recency_weight,
-                "normalized_weight": (
-                    p.recency_weight / sum(x.recency_weight for x in context.active_pools)
-                    if context.active_pools
-                    else 0.0
-                ),
+                "pool_id": pool.pool_id,
+                "name": pool.name,
+                "years": pool.years,
+                "circuits": pool.circuits,
+                "role": pool.circuit_role,
+                "target_race_context": pool.target_race_context,
+                "recency_weight": pool.recency_weight,
+                "normalized_weight": None,
                 "sample_counts": {
-                    "total_laps": p.sample_count,
-                    "by_compound": p.compound_samples,
+                    "total_laps": pool.sample_count,
+                    "by_compound": pool.compound_samples,
                 },
             }
-            for p in context.active_pools
+            for pool in context.active_pools
         ],
         "blending_strategy": {
-            "method": "sample-level replication/downsampling",
-            "rationale": "Ensures degradation models reflect pool importance without changing statistics",
+            "method": "role-based prediction adjustment",
+            "rationale": (
+                "Miami remains the circuit anchor. 2026 pre-Miami races are not flattened "
+                "into Miami truth; they only supply bounded recency adjustments and support."
+            ),
             "pools": [
                 {
-                    "pool_id": p.pool_id,
-                    "role": p.circuit_role,
-                    "description": p.description,
+                    "pool_id": pool.pool_id,
+                    "role": pool.circuit_role,
+                    "description": pool.description,
                 }
-                for p in context.active_pools
+                for pool in context.active_pools
             ],
         },
-        "total_laps": (
-            len(context.blended_data) if context.blended_data is not None else 0
-        ),
-        "notes": (
-            f"Phase 2B Hybrid Modeling: Combines {len(context.active_pools)} data pools "
-            f"with explicit recency weighting. "
-            "Miami provides circuit-specific baseline; 2026 provides current-season recency."
-        ),
+        "total_laps": total_samples,
+        "notes": context.notes,
     }
-    
+
     if output_path:
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w") as f:
-            json.dump(summary, f, indent=2)
-        logger.info(f"Saved hybrid context summary to {output_path}")
-    
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with open(output, "w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2)
     return summary
 
 
@@ -460,26 +483,11 @@ def load_or_build_hybrid_dataset(
     project_root: Path | str = ".",
     custom_context: Optional[HybridModelingContext] = None,
 ) -> Tuple[pd.DataFrame, HybridModelingContext]:
-    """Convenience function: load hybrid dataset with default or custom context.
-    
-    Args:
-        project_root: Path to project root
-        custom_context: Custom context (default: create_default_hybrid_context)
-        
-    Returns:
-        (blended_data, populated_context)
-    """
-    if custom_context is None:
-        context = create_default_hybrid_context()
-    else:
-        context = custom_context
-    
+    """Load configured pools for inspection/context reporting."""
+    context = custom_context or create_default_hybrid_context()
     context = build_hybrid_dataset(context, project_root=project_root)
-    
-    if context.blended_data is None or len(context.blended_data) == 0:
+    if context.blended_data is None or context.blended_data.empty:
         raise RuntimeError(
-            "Hybrid dataset loading failed: no data available. "
-            "Check that data/raw/miami_historical or data/raw/season_2026_pre_miami exist."
+            "Hybrid context loading failed: no source pools were available."
         )
-    
     return context.blended_data, context
