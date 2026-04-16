@@ -4,6 +4,8 @@
 
 Phase 2D adds a canonical validation harness for the strategy system. Instead of relying on a single demo scenario, it runs the existing Phase 2A strategy engine and Phase 2C stability analysis across a compact representative scenario suite and saves inspectable artifacts.
 
+Phase 2E keeps this same harness as the canonical comparison point. The latest artifact therefore reflects the post-calibration pipeline, not the earlier pre-fix run that still had pit-loss collapse and invalid SOFT predictions.
+
 ---
 
 ## What Phase 2D Validates
@@ -130,6 +132,17 @@ The JSON artifact contains:
 - aggregate robustness summary
 
 The CSV artifact flattens the scenario-level outputs for quick inspection or spreadsheet use.
+
+### Latest Post-Phase-2E Snapshot
+
+Compared with the pre-Phase-2E validation run:
+
+- pit-loss baseline moved from `0.00s` to `14.34s` using Miami-only, race-grouped pit-loss calibration
+- one-stop vs two-stop changed from `12 / 0` to `10 / 2`
+- stability changed from `8 Stable / 4 Moderately Sensitive / 0 Fragile` to `9 / 3 / 0`
+- SOFT prediction health moved from invalid (`null` probe predictions) to valid scenario usage
+
+This keeps Phase 2D useful as an evaluation harness while showing exactly how Phase 2E changed the recommendation mix.
 
 ---
 

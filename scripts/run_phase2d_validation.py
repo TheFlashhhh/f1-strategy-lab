@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data.preprocess import build_model_df, clean_laps, detect_pit_stops, select_relevant_columns
+from src.data.loader import DataLoader
 from src.features.evaluate_degradation import evaluate_all_degradation
 from src.features.hybrid_modeling import load_or_build_hybrid_dataset
 from src.simulation.strategy import estimate_pit_loss_window
@@ -48,14 +49,17 @@ def main() -> None:
         use_piecewise=True,
     )
 
-    pit_loss_samples = estimate_pit_loss_window(pit_df)
+    pit_loader = DataLoader(project_root=ROOT)
+    pit_raw = pit_loader.load_data(dataset="miami_historical")
+    pit_source_df = detect_pit_stops(select_relevant_columns(pit_raw))
+    pit_loss_samples = estimate_pit_loss_window(pit_source_df)
     if len(pit_loss_samples) == 0:
         raise RuntimeError("No pit-loss samples were produced for Phase 2D validation.")
     pit_loss_value = float(np.median(pit_loss_samples))
 
     print(f"  Active pools: {len(hybrid_context.active_pools)}")
     print(f"  Model-grade laps: {len(model_df):,}")
-    print(f"  Pit-loss baseline: {pit_loss_value:.2f}s")
+    print(f"  Miami pit-loss baseline: {pit_loss_value:.2f}s")
 
     scenarios = build_representative_scenario_suite()
     print(f"\nRunning representative scenario suite ({len(scenarios)} scenarios)...")

@@ -96,6 +96,18 @@ class DegradationEvaluationResult:
                         pw_model.post_cliff_slope * tyre_life
                         + pw_model.post_cliff_intercept
                     )
+                    pre_at_breakpoint = (
+                        pw_model.pre_cliff_slope * pw_model.breakpoint_tyre_life
+                        + pw_model.pre_cliff_intercept
+                    )
+                    post_at_breakpoint = (
+                        pw_model.post_cliff_slope * pw_model.breakpoint_tyre_life
+                        + pw_model.post_cliff_intercept
+                    )
+                    # Guard against artificial pace gains introduced by an
+                    # unconstrained intercept jump at the breakpoint.
+                    if post_at_breakpoint < pre_at_breakpoint:
+                        prediction += pre_at_breakpoint - post_at_breakpoint
                 # Check for NaN result from model parameters
                 if pd.isna(prediction):
                     self._warn_once(

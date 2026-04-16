@@ -35,7 +35,7 @@ streamlit run app/streamlit_app.py
 | **Miami Historical** | 4,311 laps (2022–2025) |
 | **2026 Pre-Miami** | 3,038 laps (Australia, China, Japan) |
 | **Model-Grade Laps** | 2,049 (Miami, after filtering) |
-| **Median Pit-Loss** | 0.30 s |
+| **Median Pit-Loss** | 14.34 s (Miami baseline, Phase 2E calibrated) |
 | **MEDIUM Degradation** | -0.049 s/lap (corrected) |
 | **HARD Degradation** | +0.003 s/lap (corrected) |
 | **Response Time** |Sub-second |
@@ -54,6 +54,7 @@ streamlit run app/streamlit_app.py
 - ✅ **Phase 2B:** Hybrid data blending (Miami-specific + current-season recency, 40%-60% weighting)
 - ✅ **Phase 2C:** Strategy sensitivity analysis (pit-loss & degradation scenario testing, stability classification)
 - ✅ **Phase 2D:** Broader validation / robustness evaluation across a representative scenario suite
+- ✅ **Phase 2E:** Strategy search refinement / calibration (pit-loss fix, SOFT cleanup, bounded two-stop search)
 
 ### Unified Pipeline
 ```python
@@ -150,6 +151,9 @@ python app/demo_strategy.py
 # Phase 2D: Broader validation / robustness evaluation
 python scripts/run_phase2d_validation.py
 
+# Phase 2E: Current calibrated strategy pipeline demo
+python app/demo_strategy.py
+
 # Phase 1B: Fuel correction impact
 python app/demo_phase1b.py
 
@@ -237,6 +241,13 @@ Run a compact representative scenario suite across compounds, tyre ages, and rem
 - `data/processed/phase2d_validation_summary.json`
 - `data/processed/phase2d_validation_summary.csv`
 
+### Phase 2E: Strategy Search Refinement / Calibration
+Calibrate the strategy stack after broader validation by:
+- fixing race-context leakage in pit-stop and fuel-progress grouping
+- restoring a non-degenerate Miami pit-loss baseline
+- cleaning up SOFT model-health behavior
+- replacing the rough two-stop heuristic with a bounded search over valid pit-lap pairs
+
 ---
 
 ## ⚙️ Pipeline Modes
@@ -256,7 +267,7 @@ Run a compact representative scenario suite across compounds, tyre ages, and rem
 - **Deterministic:** No uncertainty quantification
 - **No traffic model:** Doesn't account for overtaking or position effects
 - **No safety cars:** Doesn't respond to VSCs or full-course yellows
-- **SOFT compound:** Limited data (~33 laps); use with caution
+- **SOFT compound:** Phase 2E removed the invalid-prediction path, but SOFT should still be treated as lower-confidence than MEDIUM/HARD
 - **Validation scope:** Phase 2D is representative scenario validation, not historical backtesting or Monte Carlo race simulation
 
 ---
@@ -273,6 +284,7 @@ Run a compact representative scenario suite across compounds, tyre ages, and rem
 - ✅ Phase 2B: Hybrid data blending
 - ✅ Phase 2C: Scenario-based sensitivity analysis
 - ✅ Phase 2D: Representative robustness validation
+- ✅ Phase 2E: Strategy search refinement / calibration
 
 ---
 
@@ -297,6 +309,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 - [Phase 2B: Hybrid Modeling](docs/phase2b_hybrid_modeling.md)
 - [Phase 2C: Sensitivity Analysis](docs/phase2c_sensitivity_analysis.md)
 - [Phase 2D: Broader Validation](docs/phase2d_validation.md)
+- [Phase 2E: Strategy Refinement](docs/phase2e_strategy_refinement.md)
 
 ---
 

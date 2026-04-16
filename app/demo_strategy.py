@@ -1,10 +1,11 @@
-"""Runnable demo for the complete F1 Strategy Lab with Phase 2B hybrid modeling.
+"""Runnable demo for the calibrated F1 Strategy Lab strategy pipeline.
 
-This demo demonstrates the Phase 2B hybrid data/model pipeline:
+This demo demonstrates the current strategy stack:
 - Phase 1A: Data loading (Miami historical + 2026 pre-Miami blended)
 - Phase 1B: Fuel correction (fuel-load confound removal)
 - Phase 1C: Degradation modeling (piecewise with cliff detection)
 - Phase 2B: Hybrid modeling (Miami-specific + current-season recency blend)
+- Phase 2E: Strategy refinement / calibration (pit-loss + search cleanup)
 
 Result: Improved pit-timing strategy with transparent hybrid-model reporting.
 
@@ -26,6 +27,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data.preprocess import build_model_df, clean_laps, detect_pit_stops, select_relevant_columns
+from src.data.loader import DataLoader
 from src.features.evaluate_degradation import evaluate_all_degradation
 from src.features.hybrid_modeling import load_or_build_hybrid_dataset, summarize_hybrid_context
 from src.simulation.strategy import (
@@ -41,7 +43,7 @@ from src.simulation.strategy_sensitivity import assess_strategy_stability
 def main() -> None:
     """Run integrated Phase 2B hybrid modeling demo."""
     print("\n" + "=" * 80)
-    print("F1 STRATEGY LAB - PHASE 2B HYBRID MODELING PIPELINE")
+    print("F1 STRATEGY LAB - CALIBRATED STRATEGY PIPELINE")
     print("=" * 80)
 
     # Phase 2B: Load hybrid dataset
@@ -90,14 +92,17 @@ def main() -> None:
                 )
             )
 
-    # Estimate pit loss (uses raw lap times)
-    print("\nEstimating pit loss...")
-    pit_loss_samples = estimate_pit_loss_window(df)
+    # Estimate pit loss from Miami-only race context (circuit-specific calibration)
+    print("\nEstimating Miami pit loss baseline...")
+    pit_loader = DataLoader(project_root=ROOT)
+    pit_raw = pit_loader.load_data(dataset="miami_historical")
+    pit_source_df = detect_pit_stops(select_relevant_columns(pit_raw))
+    pit_loss_samples = estimate_pit_loss_window(pit_source_df)
     if len(pit_loss_samples) == 0:
         raise RuntimeError("No pit-loss samples were produced.")
     pit_loss_value = float(np.median(pit_loss_samples))
     print(f"  Pit-loss samples: {len(pit_loss_samples)}")
-    print(f"  Median pit-loss: {pit_loss_value:.2f} s")
+    print(f"  Miami median pit-loss: {pit_loss_value:.2f} s")
 
     # Report hybrid modeling context (Phase 2B)
     if hybrid_context:
@@ -302,6 +307,7 @@ def main() -> None:
     print("  [OK] Ranked strategy recommendations")
     print("  [OK] Phase 2C sensitivity analysis (pit-loss & degradation)")
     print("  [OK] Phase 2D validation available via scripts/run_phase2d_validation.py")
+    print("  [OK] Phase 2E calibration (race-local pit loss + cleaner search)")
     print("\nPhase 2B enables:")
     print("  - Circuit-specific modeling (Miami pit loss, degradation)")
     print("  - Current-season recency (2026 races before Miami)")

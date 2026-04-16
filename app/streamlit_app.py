@@ -43,6 +43,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data.preprocess import build_model_df, clean_laps, detect_pit_stops, select_relevant_columns
+from src.data.loader import DataLoader
 from src.features.evaluate_degradation import evaluate_all_degradation
 from src.features.hybrid_modeling import load_or_build_hybrid_dataset
 from src.simulation.strategy import (
@@ -94,7 +95,10 @@ def build_integrated_pipeline(pit_df: pd.DataFrame, model_df: pd.DataFrame) -> t
         use_piecewise=True,
     )
 
-    pit_loss_samples = estimate_pit_loss_window(pit_df)
+    pit_loader = DataLoader(project_root=ROOT)
+    pit_raw = pit_loader.load_data(dataset="miami_historical")
+    pit_source_df = detect_pit_stops(select_relevant_columns(pit_raw))
+    pit_loss_samples = estimate_pit_loss_window(pit_source_df)
     if len(pit_loss_samples) == 0:
         raise ValueError("No valid pit-loss samples were produced from the dataset.")
 
@@ -539,7 +543,7 @@ def render_assumptions_footer():
         st.markdown("""
         **Model Assumptions:**
         - Linear or piecewise-linear tyre degradation
-        - Steady pit-loss time (~25-30 seconds)
+        - Steady Miami pit-loss baseline calibrated from historical race windows
         - Constant fuel burn effect across the race
         - Green-flag conditions throughout
         

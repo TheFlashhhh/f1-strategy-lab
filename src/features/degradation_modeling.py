@@ -122,6 +122,7 @@ def fit_piecewise_model(
     compound: str,
     time_col: str = "LapTime",
     min_samples_per_segment: int = 10,
+    min_improvement_pct: float = 1.0,
 ) -> Tuple[Optional[PiecewiseModel], Optional[LinearModel]]:
     """Fit piecewise and linear degradation models for a single compound.
 
@@ -150,8 +151,7 @@ def fit_piecewise_model(
     # Find optimal breakpoint
     breakpoint = find_cliff_breakpoint(compound_data, time_col, min_samples_per_segment)
 
-    # If no breakpoint found, return linear model only
-    if breakpoint is None:
+    def build_linear_fallback(reason: str) -> Tuple[PiecewiseModel, LinearModel]:
         piecewise_model = PiecewiseModel(
             breakpoint_tyre_life=None,
             pre_cliff_slope=slope_linear,
@@ -167,10 +167,14 @@ def fit_piecewise_model(
             fell_back_to_linear=True,
         )
         logger.info(
-            f"Compound {compound}: no cliff detected, using linear fallback "
+            f"Compound {compound}: {reason}, using linear fallback "
             f"(slope={slope_linear:.4f}, rss={rss_linear:.2f})"
         )
         return piecewise_model, linear_model
+
+    # If no breakpoint found, return linear model only
+    if breakpoint is None:
+        return build_linear_fallback("no cliff detected")
 
     # Fit piecewise model at breakpoint
     pre_cliff = compound_data[compound_data["TyreLife"] <= breakpoint]
@@ -189,6 +193,16 @@ def fit_piecewise_model(
         improvement_pct = None
         if rss_linear > 0:
             improvement_pct = float((rss_linear - rss_piecewise) / rss_linear * 100)
+
+        if improvement_pct is None or improvement_pct < min_improvement_pct:
+            return build_linear_fallback(
+                f"piecewise improvement {improvement_pct or 0.0:.2f}% below threshold {min_improvement_pct:.1f}%"
+            )
+
+        if slope_post <= slope_pre:
+            return build_linear_fallback(
+                f"post-cliff slope {slope_post:.4f} did not worsen vs pre-cliff slope {slope_pre:.4f}"
+            )
 
         piecewise_model = PiecewiseModel(
             breakpoint_tyre_life=int(breakpoint),

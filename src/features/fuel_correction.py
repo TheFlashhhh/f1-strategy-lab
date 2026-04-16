@@ -19,6 +19,8 @@ from typing import Dict, Tuple
 import numpy as np
 import pandas as pd
 
+from src.data.preprocess import get_race_group_columns
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,7 +29,7 @@ def estimate_fuel_effect(df: pd.DataFrame) -> Dict[str, Tuple[float, int]]:
 
     Uses model-grade laps (pit-excluded, accurate, green-flag) to estimate how much
     faster each compound becomes as fuel burns. Fits a linear relationship between
-    normalized race progress (0–1) and lap time for each compound.
+    normalized race progress (0-1) and lap time for each compound.
 
     Assumption: Lap time = base + fuel_effect * normalized_race_progress
     (where normalized_race_progress goes from 0 to 1 across the race)
@@ -37,7 +39,7 @@ def estimate_fuel_effect(df: pd.DataFrame) -> Dict[str, Tuple[float, int]]:
             Expected to be pre-filtered to model-grade laps.
 
     Returns:
-        Dict mapping compound → (fuel_effect_s_per_race, sample_count)
+        Dict mapping compound -> (fuel_effect_s_per_race, sample_count)
         fuel_effect_s_per_race: Seconds of time improvement across the full race.
         Negative value means lap time improves as race progresses (fuel burns).
     """
@@ -50,20 +52,23 @@ def estimate_fuel_effect(df: pd.DataFrame) -> Dict[str, Tuple[float, int]]:
             logger.warning(f"Compound {compound}: only {len(compound_df)} samples, skipping")
             continue
 
-        # Normalize lap number to 0–1 range (race progress) per driver
+        # Normalize lap number to 0-1 race progress inside each driver/race group.
         compound_df["RaceProgress"] = 0.0
-        for driver in compound_df["Driver"].unique():
-            driver_mask = compound_df["Driver"] == driver
-            driver_data = compound_df.loc[driver_mask, "LapNumber"]
-            if len(driver_data) > 1:
-                min_lap = driver_data.min()
-                max_lap = driver_data.max()
-                # Normalize to 0-1
-                compound_df.loc[driver_mask, "RaceProgress"] = (
-                    (compound_df.loc[driver_mask, "LapNumber"] - min_lap) / (max_lap - min_lap)
-                )
+        group_cols = get_race_group_columns(compound_df, include_driver=True)
+        for _, group_idx in compound_df.groupby(group_cols).groups.items():
+            driver_data = compound_df.loc[group_idx, "LapNumber"]
+            if len(driver_data) <= 1:
+                continue
 
-        # Fit: LapTime ~ RaceProgress (exclude intercept bias by centering)
+            min_lap = driver_data.min()
+            max_lap = driver_data.max()
+            if max_lap <= min_lap:
+                continue
+
+            compound_df.loc[group_idx, "RaceProgress"] = (
+                (compound_df.loc[group_idx, "LapNumber"] - min_lap) / (max_lap - min_lap)
+            )
+
         valid_mask = compound_df["LapTime"].notna() & compound_df["RaceProgress"].notna()
         valid_data = compound_df.loc[valid_mask].copy()
 
@@ -71,15 +76,12 @@ def estimate_fuel_effect(df: pd.DataFrame) -> Dict[str, Tuple[float, int]]:
             logger.warning(f"Compound {compound}: insufficient valid samples after filtering")
             continue
 
-        # Fit linear model: slope of LapTime vs. RaceProgress
-        # Negative slope = improvement as race progresses (fuel burn effect)
-        # The slope is in units of seconds per unit race progress [0-1], i.e., seconds across full race
         try:
             slope, _ = np.polyfit(valid_data["RaceProgress"], valid_data["LapTime"], 1)
             fuel_effects[compound] = (float(slope), len(valid_data))
             logger.info(
-                f"Compound {compound}: fuel effect = {slope:.4f} s/race (total improvement over full race), "
-                f"{len(valid_data)} laps"
+                f"Compound {compound}: fuel effect = {slope:.4f} s/race "
+                f"(total improvement over full race), {len(valid_data)} laps"
             )
         except Exception as e:
             logger.warning(f"Compound {compound}: failed to fit fuel effect: {e}")
@@ -108,26 +110,28 @@ def apply_fuel_correction(
         DataFrame with new column FuelCorrectedLapTime.
     """
     df = df.copy()
-    df["FuelCorrectedLapTime"] = df["LapTime"].copy()  # Default to raw if no correction
+    df["FuelCorrectedLapTime"] = df["LapTime"].copy()
 
     for compound, (fuel_effect, _) in fuel_effects.items():
         compound_mask = df["Compound"] == compound
+        compound_df = df.loc[compound_mask].copy()
+        group_cols = get_race_group_columns(compound_df, include_driver=True)
 
-        # Normalize lap number to race progress per driver
-        for driver in df.loc[compound_mask, "Driver"].unique():
-            driver_mask = compound_mask & (df["Driver"] == driver)
-            driver_laps = df.loc[driver_mask, "LapNumber"]
+        for _, group_idx in compound_df.groupby(group_cols).groups.items():
+            driver_laps = df.loc[group_idx, "LapNumber"]
+            if len(driver_laps) <= 1:
+                continue
 
-            if len(driver_laps) > 1:
-                min_lap = driver_laps.min()
-                max_lap = driver_laps.max()
-                race_progress = (df.loc[driver_mask, "LapNumber"] - min_lap) / (max_lap - min_lap)
+            min_lap = driver_laps.min()
+            max_lap = driver_laps.max()
+            if max_lap <= min_lap:
+                continue
 
-                # Apply correction
-                correction = fuel_effect * race_progress
-                df.loc[driver_mask, "FuelCorrectedLapTime"] = (
-                    df.loc[driver_mask, "LapTime"] - correction
-                )
+            race_progress = (df.loc[group_idx, "LapNumber"] - min_lap) / (max_lap - min_lap)
+            correction = fuel_effect * race_progress
+            df.loc[group_idx, "FuelCorrectedLapTime"] = (
+                df.loc[group_idx, "LapTime"] - correction
+            )
 
     return df
 
@@ -150,7 +154,6 @@ def evaluate_fuel_correction(
     Returns:
         Dict with before/after comparison by compound.
     """
-    # Apply fuel correction to model laps
     corrected_laps = apply_fuel_correction(model_laps, fuel_effects)
 
     evaluation = {
@@ -178,7 +181,6 @@ def evaluate_fuel_correction(
             logger.warning(f"Compound {compound}: insufficient samples for comparison")
             continue
 
-        # Fit raw degradation
         try:
             raw_slope, raw_intercept = np.polyfit(
                 compound_raw["TyreLife"],
@@ -189,7 +191,6 @@ def evaluate_fuel_correction(
             logger.warning(f"Compound {compound}: failed to fit raw degradation: {e}")
             raw_slope, raw_intercept = np.nan, np.nan
 
-        # Fit corrected degradation
         try:
             corrected_slope, corrected_intercept = np.polyfit(
                 compound_corrected["TyreLife"],
@@ -200,7 +201,6 @@ def evaluate_fuel_correction(
             logger.warning(f"Compound {compound}: failed to fit corrected degradation: {e}")
             corrected_slope, corrected_intercept = np.nan, np.nan
 
-        # Compare
         slope_change = corrected_slope - raw_slope if not np.isnan(raw_slope) else np.nan
         intercept_change = corrected_intercept - raw_intercept if not np.isnan(raw_intercept) else np.nan
 
@@ -220,7 +220,10 @@ def evaluate_fuel_correction(
     return evaluation
 
 
-def save_fuel_correction_summary(evaluation: Dict, output_path: Path | str = "data/processed/fuel_correction_summary.json") -> Path:
+def save_fuel_correction_summary(
+    evaluation: Dict,
+    output_path: Path | str = "data/processed/fuel_correction_summary.json",
+) -> Path:
     """Save fuel correction evaluation to JSON.
 
     Args:
@@ -233,13 +236,12 @@ def save_fuel_correction_summary(evaluation: Dict, output_path: Path | str = "da
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Ensure all values are JSON-serializable
     def make_serializable(obj):
         if isinstance(obj, (np.integer, np.floating)):
             return float(obj)
-        elif isinstance(obj, dict):
+        if isinstance(obj, dict):
             return {k: make_serializable(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
+        if isinstance(obj, list):
             return [make_serializable(item) for item in obj]
         return obj
 
@@ -275,7 +277,6 @@ def print_fuel_correction_summary(evaluation: Dict) -> None:
     print(f"{'Compound':<10} {'Raw Slope':<15} {'Corrected Slope':<18} {'Slope Change':<15} {'% Change':<10}")
     print("-" * 70)
 
-    # Sort compounds for consistent output (SOFT, MEDIUM, HARD)
     compound_order = ["SOFT", "MEDIUM", "HARD"]
     for compound in compound_order:
         if compound not in evaluation["degradation_comparison"]:
