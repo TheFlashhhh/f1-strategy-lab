@@ -8,6 +8,7 @@ Utility scripts for data validation, notebook maintenance, and pipeline testing.
 |--------|---------|
 | `validate_fuel_correction.py` | Verify Phase 1B fuel correction implementation |
 | `test_phase1_integration.py` | Quick test of complete Phase 1 pipeline |
+| `run_phase2d_validation.py` | Run representative Phase 2D robustness validation and save artifacts |
 | `verify_data_manifest.py` | Validate data ingestion manifest |
 | `inspect_notebook_cells.py` | Inspect EDA notebook cell structure |
 | `cleanup_notebook_cells.py` | Remove unnecessary cells from EDA notebook |
@@ -37,6 +38,14 @@ Quick integration test of the complete Phase 1 pipeline:
 - Tests piecewise degradation models (Phase 1C)
 - Verifies backward compatibility for linear models
 - Tests predictions for all compounds
+
+### run_phase2d_validation.py
+Canonical Phase 2D robustness evaluation:
+- Loads the hybrid modeling pipeline used by the app/demo
+- Runs a compact representative scenario suite across compounds, tyre ages, and laps remaining
+- Captures best strategy, pit laps, feasibility, and Phase 2C stability labels
+- Saves `data/processed/phase2d_validation_summary.json`
+- Saves `data/processed/phase2d_validation_summary.csv`
 
 ### verify_data_manifest.py
 Validates data ingestion manifest integrity:

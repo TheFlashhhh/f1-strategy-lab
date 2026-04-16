@@ -205,10 +205,12 @@ def fit_piecewise_model(
             fell_back_to_linear=False,
         )
 
+        improvement_str = f"{improvement_pct:.1f}%" if improvement_pct is not None else "N/A"
+
         logger.info(
             f"Compound {compound}: cliff at tyre-life={breakpoint}, "
             f"pre_slope={slope_pre:.4f}, post_slope={slope_post:.4f}, "
-            f"improvement={improvement_pct:.1f}%"
+            f"improvement={improvement_str}"
         )
 
         return piecewise_model, linear_model

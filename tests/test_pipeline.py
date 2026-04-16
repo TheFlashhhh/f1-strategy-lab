@@ -33,9 +33,27 @@ def test_phase1_imports():
     """Test Phase 1-specific imports."""
     from src.features.evaluate_degradation import evaluate_all_degradation
     from src.data.loader import DataLoader
+    from src.simulation.strategy_validation import build_representative_scenario_suite
     
     assert evaluate_all_degradation is not None
     assert DataLoader is not None
+    assert build_representative_scenario_suite is not None
+
+
+def test_phase2d_scenario_suite():
+    """Test that the Phase 2D scenario suite is representative but compact."""
+    from src.simulation.strategy_validation import build_representative_scenario_suite
+
+    suite = build_representative_scenario_suite()
+    assert 9 <= len(suite) <= 15
+
+    compounds = {scenario.current_compound for scenario in suite}
+    age_buckets = {scenario.tyre_age_bucket for scenario in suite}
+    lap_buckets = {scenario.laps_remaining_bucket for scenario in suite}
+
+    assert compounds == {"SOFT", "MEDIUM", "HARD"}
+    assert age_buckets == {"low", "medium", "high"}
+    assert lap_buckets == {"short", "medium", "long"}
 
 
 def test_data_loading():

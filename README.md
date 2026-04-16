@@ -53,6 +53,7 @@ streamlit run app/streamlit_app.py
 - ✅ **Phase 2A:** Automatic strategy search and recommendation (one-stop vs two-stop, ranked by time)
 - ✅ **Phase 2B:** Hybrid data blending (Miami-specific + current-season recency, 40%-60% weighting)
 - ✅ **Phase 2C:** Strategy sensitivity analysis (pit-loss & degradation scenario testing, stability classification)
+- ✅ **Phase 2D:** Broader validation / robustness evaluation across a representative scenario suite
 
 ### Unified Pipeline
 ```python
@@ -136,6 +137,7 @@ streamlit run app/streamlit_app.py
 - 🎯 Automatic pit strategy recommendation
 - 📊 Top 5 alternative strategies ranked by time
 - 📈 Real-time model status (model type, sample count per compound)
+- ✅ Optional visibility into the latest Phase 2D representative validation summary
 - 🔧 Advanced mode: Manual pit-lap curves and deep-dive analysis
 - ⚠️ Feasibility badges and limitations
 
@@ -144,6 +146,9 @@ streamlit run app/streamlit_app.py
 ```bash
 # Phase 2A: Strategy recommendation
 python app/demo_strategy.py
+
+# Phase 2D: Broader validation / robustness evaluation
+python scripts/run_phase2d_validation.py
 
 # Phase 1B: Fuel correction impact
 python app/demo_phase1b.py
@@ -163,6 +168,7 @@ pytest tests/
 ```bash
 python scripts/validate_fuel_correction.py
 python scripts/test_phase1_integration.py
+python scripts/run_phase2d_validation.py
 python scripts/verify_data_manifest.py
 ```
 
@@ -221,6 +227,16 @@ Search pit-window space and recommend the strategy minimizing total race time.
 ### Phase 2B: Hybrid Modeling
 Blend Miami-specific historical data (40%) with current-season 2026 races (60%).
 
+### Phase 2C: Sensitivity Analysis
+Stress-test the baseline recommendation under pit-loss and degradation variations and label it as Stable, Moderately Sensitive, or Fragile.
+
+### Phase 2D: Broader Validation / Robustness Evaluation
+Run a compact representative scenario suite across compounds, tyre ages, and remaining-race lengths to understand where the strategy system is robust versus brittle.
+
+**Artifacts:**
+- `data/processed/phase2d_validation_summary.json`
+- `data/processed/phase2d_validation_summary.csv`
+
 ---
 
 ## ⚙️ Pipeline Modes
@@ -241,6 +257,7 @@ Blend Miami-specific historical data (40%) with current-season 2026 races (60%).
 - **No traffic model:** Doesn't account for overtaking or position effects
 - **No safety cars:** Doesn't respond to VSCs or full-course yellows
 - **SOFT compound:** Limited data (~33 laps); use with caution
+- **Validation scope:** Phase 2D is representative scenario validation, not historical backtesting or Monte Carlo race simulation
 
 ---
 
@@ -254,8 +271,8 @@ Blend Miami-specific historical data (40%) with current-season 2026 races (60%).
 ### Phase 2 (In progress) 🚀
 - ✅ Phase 2A: Automatic strategy search
 - ✅ Phase 2B: Hybrid data blending
-- ⏳ Phase 2C: Uncertainty quantification
-- ⏳ Phase 2D: Multi-circuit validation
+- ✅ Phase 2C: Scenario-based sensitivity analysis
+- ✅ Phase 2D: Representative robustness validation
 
 ---
 
@@ -278,6 +295,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 - [Phase 1C: Degradation Modeling](docs/phase1c_degradation_modeling.md)
 - [Phase 2A: Strategy Engine](docs/phase2a_strategy_engine.md)
 - [Phase 2B: Hybrid Modeling](docs/phase2b_hybrid_modeling.md)
+- [Phase 2C: Sensitivity Analysis](docs/phase2c_sensitivity_analysis.md)
+- [Phase 2D: Broader Validation](docs/phase2d_validation.md)
 
 ---
 

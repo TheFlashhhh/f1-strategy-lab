@@ -10,12 +10,32 @@ Run as: streamlit run app/streamlit_app.py
 from __future__ import annotations
 
 import sys
+import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import streamlit as st
+try:
+    import streamlit as st
+except ModuleNotFoundError:  # pragma: no cover - import-only fallback for smoke tests
+    class _MissingStreamlitShim:
+        """Minimal shim so module import succeeds when Streamlit is unavailable."""
+
+        def cache_data(self, func=None, **_kwargs):
+            if func is None:
+                def decorator(inner):
+                    return inner
+                return decorator
+            return func
+
+        def __getattr__(self, _name):
+            raise ModuleNotFoundError(
+                "streamlit is not installed in this Python environment. "
+                "Install requirements or use the project virtual environment to run the app."
+            )
+
+    st = _MissingStreamlitShim()
 
 # Support running with: streamlit run app/streamlit_app.py
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +100,19 @@ def build_integrated_pipeline(pit_df: pd.DataFrame, model_df: pd.DataFrame) -> t
 
     pit_loss_value = float(np.median(pit_loss_samples))
     return deg_result, pit_loss_value, int(len(pit_loss_samples))
+
+
+@st.cache_data
+def load_phase2d_validation_summary() -> dict | None:
+    """Load the latest Phase 2D summary artifact if it exists."""
+    artifact_path = ROOT / "data" / "processed" / "phase2d_validation_summary.json"
+    if not artifact_path.exists():
+        return None
+    try:
+        with open(artifact_path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return None
 
 
 # ============================================================================
@@ -326,6 +359,28 @@ def render_data_context(hybrid_context):
             )
 
 
+def render_phase2d_validation_note():
+    """Render a lightweight note about representative validation coverage."""
+    summary_artifact = load_phase2d_validation_summary()
+    if not summary_artifact:
+        return
+
+    metadata = summary_artifact.get("metadata", {})
+    aggregate = summary_artifact.get("aggregate_summary", {})
+    scenario_count = metadata.get("scenario_count", 0)
+    stable = aggregate.get("stability_counts", {}).get("Stable", 0)
+    fragile = aggregate.get("stability_counts", {}).get("Fragile", 0)
+    one_stop = aggregate.get("strategy_type_counts", {}).get("one-stop", 0)
+    two_stop = aggregate.get("strategy_type_counts", {}).get("two-stop", 0)
+
+    st.info(
+        "Phase 2D validation artifact loaded: "
+        f"{scenario_count} representative scenarios | "
+        f"{stable} stable | {fragile} fragile | "
+        f"1-stop {one_stop}, 2-stop {two_stop}."
+    )
+
+
 def render_advanced_analysis(available_compounds, deg_result, pit_loss_value, 
                             current_tyre_life, laps_remaining, current_compound):
     """Render advanced features (pit-lap curve, detailed model inspection)."""
@@ -558,6 +613,7 @@ def main():
         render_model_status(deg_result)
     with col_right:
         render_data_context(hybrid_context)
+    render_phase2d_validation_note()
     
     # === PHASE 2C SENSITIVITY SECTION ===
     st.divider()

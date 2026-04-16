@@ -54,6 +54,14 @@ class DegradationEvaluationResult:
         self.linear_models = linear_models
         self.fuel_corrected = fuel_corrected
         self.compounds = compounds
+        self._warning_cache: set[str] = set()
+
+    def _warn_once(self, key: str, message: str) -> None:
+        """Emit a warning once per unique key to avoid log spam."""
+        if key in self._warning_cache:
+            return
+        logger.warning(message)
+        self._warning_cache.add(key)
 
     def predict_lap_time(
         self,
@@ -90,7 +98,8 @@ class DegradationEvaluationResult:
                     )
                 # Check for NaN result from model parameters
                 if pd.isna(prediction):
-                    logger.warning(
+                    self._warn_once(
+                        f"{compound}:piecewise_nan",
                         f"Piecewise prediction for {compound} returned NaN. "
                         f"Model parameters may be invalid. Falling back to None."
                     )
@@ -103,7 +112,8 @@ class DegradationEvaluationResult:
                     + pw_model.pre_cliff_intercept
                 )
                 if pd.isna(prediction):
-                    logger.warning(
+                    self._warn_once(
+                        f"{compound}:piecewise_linear_nan",
                         f"Linear (piecewise) prediction for {compound} returned NaN. "
                         f"Model parameters may be invalid. Falling back to None."
                     )
@@ -116,15 +126,19 @@ class DegradationEvaluationResult:
             prediction = lin_model.slope * tyre_life + lin_model.intercept
             # Check for NaN (can happen if slope/intercept are NaN)
             if pd.isna(prediction):
-                logger.warning(
+                self._warn_once(
+                    f"{compound}:linear_nan",
                     f"Linear prediction for {compound} returned NaN. "
                     f"Slope={lin_model.slope}, Intercept={lin_model.intercept}. "
                     f"Model may be invalid."
                 )
                 return None
-            return prediction
+            return float(prediction)
         
-        logger.warning(f"No degradation model found for compound {compound}")
+        self._warn_once(
+            f"{compound}:missing_model",
+            f"No degradation model found for compound {compound}",
+        )
         return None
 
     def get_model_info(self, compound: str) -> Dict:

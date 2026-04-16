@@ -301,6 +301,7 @@ def main() -> None:
     print("  [OK] One-stop vs two-stop evaluation")
     print("  [OK] Ranked strategy recommendations")
     print("  [OK] Phase 2C sensitivity analysis (pit-loss & degradation)")
+    print("  [OK] Phase 2D validation available via scripts/run_phase2d_validation.py")
     print("\nPhase 2B enables:")
     print("  - Circuit-specific modeling (Miami pit loss, degradation)")
     print("  - Current-season recency (2026 races before Miami)")
@@ -312,6 +313,9 @@ def main() -> None:
     print("  - Degradation assumption testing (optimistic/pessimistic)")
     print("  - Stability classification (Stable / Moderately Sensitive / Fragile)")
     print("  - Identification of flip conditions")
+    print("\nFor broader validation across representative race states:")
+    print("  - Run: python scripts/run_phase2d_validation.py")
+    print("  - Review: data/processed/phase2d_validation_summary.json")
 
 
 
