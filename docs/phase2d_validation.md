@@ -124,6 +124,7 @@ Phase 2D writes:
 
 - `data/processed/phase2d_validation_summary.json`
 - `data/processed/phase2d_validation_summary.csv`
+- `data/processed/pre3_soft_diagnostic_summary.json`
 
 The JSON artifact contains:
 
@@ -138,11 +139,15 @@ The CSV artifact flattens the scenario-level outputs for quick inspection or spr
 Compared with the earlier post-Phase-2E run:
 
 - pit-loss baseline remains non-degenerate at about `14.34s`
-- the more conservative role-based hybrid returns `12 / 0` one-stop vs two-stop in the current representative suite
-- stability is currently `10 Stable / 2 Moderately Sensitive / 0 Fragile`
-- SOFT is now surfaced as `Moderate` support rather than being treated implicitly like a high-confidence compound
+- the suite now includes two explicit long-distance stress cases so the two-stop path is exercised on purpose
+- under the current stack, ordinary states still lean one-stop, while the added extreme long-distance cases expose when two-stop becomes necessary
+- SOFT is still surfaced as `Moderate` support rather than being treated implicitly like a high-confidence compound
+- the latest low-margin support-aware tie-break reduced representative SOFT selections from `8` to `6`, but SOFT still appears often enough that caution remains warranted
 
-This is a useful reminder that Pre-3 is a defensibility pass, not a realism boost. The recommendations are now easier to explain, but also more conservative.
+This is the honest reading:
+
+- one-stop dominance is partly a suite-design issue if the suite only contains ordinary race states
+- but it is also a real modeling/calibration outcome, because even many longer states still leave two-stop several seconds behind under the current pit-loss and degradation assumptions
 
 ---
 
@@ -160,6 +165,7 @@ The script:
 - fits degradation models through the existing Phase 1 stack
 - estimates pit-loss from the current data
 - runs the representative Phase 2D suite
+- reports how often a two-stop option is available and how close it gets to the winning one-stop
 - prints a concise console summary
 - saves JSON and CSV artifacts
 

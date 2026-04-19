@@ -17,6 +17,11 @@ from src.simulation.strategy import (
 logger = logging.getLogger(__name__)
 
 
+ONE_STOP_SELECTION_TOLERANCE_S = 1.0
+TIMING_TRACE_NEAR_OPTIMAL_TOLERANCE_S = 1.25
+LOW_MARGIN_SOFT_TIEBREAK_S = 1.0
+
+
 @dataclass
 class StrategyPlan:
     """Represents a complete pit strategy from current state to race end."""
@@ -85,6 +90,100 @@ def _simulate_stint_time(
     return total_time
 
 
+def _plan_future_compounds(plan: StrategyPlan) -> List[str]:
+    """Return the future compounds used after the current stint."""
+    compounds = [plan.next_compound]
+    if plan.final_compound is not None:
+        compounds.append(plan.final_compound)
+    return compounds
+
+
+def _plan_uses_moderate_or_low_support_soft(
+    degradation_models: Union[Dict, object],
+    plan: StrategyPlan,
+) -> bool:
+    """Return True when a plan leans on SOFT with weaker-than-high support."""
+    for compound in _plan_future_compounds(plan):
+        if compound != "SOFT":
+            continue
+        support_info = _compound_support_info(degradation_models, compound)
+        support_tier = support_info.get("support_tier")
+        if support_tier is None:
+            samples = _compound_model_info(degradation_models, compound).get("samples")
+            if isinstance(samples, int) and samples < 250:
+                support_tier = "Moderate"
+        if support_tier in {"Low", "Moderate"}:
+            return True
+    return False
+
+
+def _plan_has_only_high_support_futures(
+    degradation_models: Union[Dict, object],
+    plan: StrategyPlan,
+) -> bool:
+    """Return True when every future stint uses a high-support compound."""
+    future_compounds = _plan_future_compounds(plan)
+    if not future_compounds:
+        return False
+    for compound in future_compounds:
+        support_info = _compound_support_info(degradation_models, compound)
+        support_tier = support_info.get("support_tier")
+        if support_tier is None:
+            samples = _compound_model_info(degradation_models, compound).get("samples")
+            support_tier = "High" if isinstance(samples, int) and samples >= 250 else "Moderate"
+        if support_tier != "High":
+            return False
+    return True
+
+
+def _apply_low_margin_soft_tie_break(
+    ranked_plans: List[StrategyPlan],
+    degradation_models: Union[Dict, object],
+    max_gap_s: float = LOW_MARGIN_SOFT_TIEBREAK_S,
+) -> List[StrategyPlan]:
+    """Prefer the high-support non-SOFT equivalent when SOFT only wins narrowly.
+
+    This is intentionally narrow:
+    - only triggers when the nominal best plan uses SOFT under Moderate/Low support
+    - only looks for an alternative with the same structure and pit timing
+    - only flips when the non-SOFT alternative is within a 1.0s band
+
+    The goal is to avoid overclaiming a weakly-supported SOFT edge when the
+    higher-support alternative is effectively tied on total race time.
+    """
+    if len(ranked_plans) < 2:
+        return ranked_plans
+
+    best_plan = ranked_plans[0]
+    if not _plan_uses_moderate_or_low_support_soft(degradation_models, best_plan):
+        return ranked_plans
+
+    for index, candidate in enumerate(ranked_plans[1:], start=1):
+        if candidate.total_race_time - best_plan.total_race_time > max_gap_s:
+            break
+        same_structure = (
+            candidate.strategy_type == best_plan.strategy_type
+            and candidate.pit_lap == best_plan.pit_lap
+            and candidate.second_pit_lap == best_plan.second_pit_lap
+        )
+        if not same_structure:
+            continue
+        if _plan_uses_moderate_or_low_support_soft(degradation_models, candidate):
+            continue
+        if not _plan_has_only_high_support_futures(degradation_models, candidate):
+            continue
+
+        reordered = [candidate, best_plan]
+        reordered.extend(
+            plan
+            for idx, plan in enumerate(ranked_plans[1:], start=1)
+            if idx != index
+        )
+        return reordered
+
+    return ranked_plans
+
+
 def estimate_stint_feasibility(
     degradation_models: Union[Dict, object],
     compound: str,
@@ -134,6 +233,259 @@ def estimate_stint_feasibility(
 def _build_feasibility_chain(reasons: List[Tuple[str, str]]) -> str:
     """Join per-stint feasibility messages into a single explanation."""
     return "; ".join(f"{label}: {reason}" for label, reason in reasons)
+
+
+def _select_latest_near_optimal_one_stop_candidate(
+    feasible_candidates: List[Tuple[int, float, str]],
+    tolerance_s: float = ONE_STOP_SELECTION_TOLERANCE_S,
+) -> Tuple[int, float, str]:
+    """Prefer the latest pit lap inside a flat near-optimal timing band.
+
+    Stop-timing backtests showed that some one-stop curves are nearly flat for
+    several laps but the previous logic always chose the earliest minimum-time
+    lap. In a deterministic decision-support setting, later laps inside a
+    sub-second band are more honest than forcing an early pit stop on a
+    marginal timing difference.
+    """
+    best_time = min(candidate[1] for candidate in feasible_candidates)
+    near_optimal = [
+        candidate for candidate in feasible_candidates
+        if candidate[1] <= best_time + tolerance_s
+    ]
+    return max(near_optimal, key=lambda candidate: candidate[0])
+
+
+def _count_local_minima(rows: List[dict]) -> int:
+    """Count distinct local minima in a timing trace."""
+    if len(rows) <= 2:
+        return len(rows)
+
+    minima = 0
+    for index, row in enumerate(rows):
+        current = row["total_race_time"]
+        prev_value = rows[index - 1]["total_race_time"] if index > 0 else None
+        next_value = rows[index + 1]["total_race_time"] if index < len(rows) - 1 else None
+
+        left_ok = prev_value is None or current <= prev_value
+        right_ok = next_value is None or current <= next_value
+        strictly_better = (
+            (prev_value is not None and current < prev_value)
+            or (next_value is not None and current < next_value)
+            or (prev_value is None or next_value is None)
+        )
+        if left_ok and right_ok and strictly_better:
+            minima += 1
+
+    return minima
+
+
+def _curve_shape_from_band(near_optimal_laps: List[int]) -> str:
+    """Return a simple label for the width of a near-optimal timing band."""
+    if len(near_optimal_laps) >= 6:
+        return "flat"
+    if len(near_optimal_laps) >= 3:
+        return "moderate"
+    return "sharp"
+
+
+def build_strategy_timing_trace(
+    degradation_models: Union[Dict, object],
+    pit_loss_value: float,
+    current_compound: str,
+    current_tyre_life: int,
+    laps_remaining: int,
+    next_compound: str,
+    final_compound: Optional[str] = None,
+    min_stint_length: int = 3,
+    near_optimal_tolerance_s: float = TIMING_TRACE_NEAR_OPTIMAL_TOLERANCE_S,
+) -> dict:
+    """Trace total race time across feasible first-stop timings for a fixed plan.
+
+    For one-stop plans this evaluates every feasible pit lap directly. For
+    fixed compound two-stop plans it traces first-stop timing while optimizing
+    the second stop for that first-stop choice.
+    """
+    rows: List[dict] = []
+
+    if final_compound is None:
+        strategy_df = optimize_pit_window(
+            degradation_models=degradation_models,
+            pit_loss_value=pit_loss_value,
+            current_tyre_life=current_tyre_life,
+            laps_remaining=laps_remaining,
+            compound=current_compound,
+            post_pit_compound=next_compound,
+            strict_predictions=True,
+        )
+
+        for row in strategy_df.loc[strategy_df["TotalTime"].notna(), ["PitLap", "TotalTime"]].itertuples(index=False):
+            first_pit_lap = int(row.PitLap)
+            remaining_after_pit = laps_remaining - first_pit_lap
+
+            feasible_current, reason_current = estimate_stint_feasibility(
+                degradation_models=degradation_models,
+                compound=current_compound,
+                tyre_life=current_tyre_life,
+                stint_laps=first_pit_lap,
+                pit_loss_value=pit_loss_value,
+            )
+            feasible_next, reason_next = estimate_stint_feasibility(
+                degradation_models=degradation_models,
+                compound=next_compound,
+                tyre_life=1,
+                stint_laps=remaining_after_pit,
+                pit_loss_value=pit_loss_value,
+            )
+
+            if not (feasible_current and feasible_next):
+                continue
+
+            rows.append(
+                {
+                    "first_pit_lap": first_pit_lap,
+                    "second_pit_lap": None,
+                    "total_race_time": float(row.TotalTime),
+                    "feasibility_reason": _build_feasibility_chain(
+                        [
+                            ("Current stint", reason_current),
+                            (f"{next_compound} finish stint", reason_next),
+                        ]
+                    ),
+                }
+            )
+    else:
+        max_first_pit = laps_remaining - (2 * min_stint_length)
+        for first_pit_lap in range(min_stint_length, max_first_pit + 1):
+            best_row: Optional[dict] = None
+            min_second_pit = first_pit_lap + min_stint_length
+            max_second_pit = laps_remaining - min_stint_length
+
+            for second_pit_lap in range(min_second_pit, max_second_pit + 1):
+                stint1_laps = first_pit_lap
+                stint2_laps = second_pit_lap - first_pit_lap
+                stint3_laps = laps_remaining - second_pit_lap
+
+                stint1_time = _simulate_stint_time(
+                    degradation_models,
+                    current_compound,
+                    current_tyre_life,
+                    stint1_laps,
+                )
+                stint2_time = _simulate_stint_time(
+                    degradation_models,
+                    next_compound,
+                    1,
+                    stint2_laps,
+                )
+                stint3_time = _simulate_stint_time(
+                    degradation_models,
+                    final_compound,
+                    1,
+                    stint3_laps,
+                )
+                if any(t is None for t in (stint1_time, stint2_time, stint3_time)):
+                    continue
+
+                feasible_1, reason_1 = estimate_stint_feasibility(
+                    degradation_models,
+                    current_compound,
+                    current_tyre_life,
+                    stint_laps=stint1_laps,
+                    pit_loss_value=pit_loss_value,
+                )
+                feasible_2, reason_2 = estimate_stint_feasibility(
+                    degradation_models,
+                    next_compound,
+                    1,
+                    stint_laps=stint2_laps,
+                    pit_loss_value=pit_loss_value,
+                )
+                feasible_3, reason_3 = estimate_stint_feasibility(
+                    degradation_models,
+                    final_compound,
+                    1,
+                    stint_laps=stint3_laps,
+                    pit_loss_value=pit_loss_value,
+                )
+                if not (feasible_1 and feasible_2 and feasible_3):
+                    continue
+
+                total_time = (
+                    float(stint1_time)
+                    + pit_loss_value
+                    + float(stint2_time)
+                    + pit_loss_value
+                    + float(stint3_time)
+                )
+                row_payload = {
+                    "first_pit_lap": first_pit_lap,
+                    "second_pit_lap": second_pit_lap,
+                    "total_race_time": total_time,
+                    "feasibility_reason": _build_feasibility_chain(
+                        [
+                            ("Current stint", reason_1),
+                            (f"{next_compound} middle stint", reason_2),
+                            (f"{final_compound} finish stint", reason_3),
+                        ]
+                    ),
+                }
+                if best_row is None or total_time < best_row["total_race_time"]:
+                    best_row = row_payload
+
+            if best_row is not None:
+                rows.append(best_row)
+
+    if not rows:
+        raise ValueError(
+            f"No feasible timing trace could be built for {current_compound}->{next_compound}"
+            + (f"->{final_compound}" if final_compound else "")
+        )
+
+    rows.sort(key=lambda row: row["first_pit_lap"])
+    best_row = min(rows, key=lambda row: row["total_race_time"])
+    best_total = float(best_row["total_race_time"])
+    near_optimal_rows = [
+        row for row in rows
+        if row["total_race_time"] <= best_total + near_optimal_tolerance_s
+    ]
+    near_optimal_laps = [int(row["first_pit_lap"]) for row in near_optimal_rows]
+    first_pit_window = [int(row["first_pit_lap"]) for row in rows]
+    expected_band = list(range(min(near_optimal_laps), max(near_optimal_laps) + 1))
+    local_minima_count = _count_local_minima(rows)
+
+    trace_rows = []
+    for row in rows:
+        trace_rows.append(
+            {
+                "first_pit_lap": int(row["first_pit_lap"]),
+                "second_pit_lap": int(row["second_pit_lap"]) if row["second_pit_lap"] is not None else None,
+                "total_race_time": round(float(row["total_race_time"]), 3),
+                "delta_vs_best_s": round(float(row["total_race_time"] - best_total), 3),
+            }
+        )
+
+    return {
+        "strategy_type": "one-stop" if final_compound is None else "two-stop",
+        "current_compound": current_compound,
+        "current_tyre_life": int(current_tyre_life),
+        "next_compound": next_compound,
+        "final_compound": final_compound,
+        "laps_remaining": int(laps_remaining),
+        "best_first_pit_lap": int(best_row["first_pit_lap"]),
+        "best_second_pit_lap": int(best_row["second_pit_lap"]) if best_row["second_pit_lap"] is not None else None,
+        "best_total_race_time": round(best_total, 3),
+        "near_optimal_tolerance_s": round(float(near_optimal_tolerance_s), 3),
+        "near_optimal_band_laps": near_optimal_laps,
+        "near_optimal_band_width_laps": len(near_optimal_laps),
+        "curve_shape": _curve_shape_from_band(near_optimal_laps),
+        "best_on_window_edge": bool(
+            best_row["first_pit_lap"] == first_pit_window[0]
+            or best_row["first_pit_lap"] == first_pit_window[-1]
+        ),
+        "near_optimal_band_fragmented": near_optimal_laps != expected_band,
+        "local_minima_count": local_minima_count,
+        "trace": trace_rows,
+    }
 
 
 def evaluate_one_stop_strategies(
@@ -216,9 +568,9 @@ def evaluate_one_stop_strategies(
             )
             continue
 
-        optimal_pit_lap, total_race_time, feasibility_reason = min(
+        optimal_pit_lap, total_race_time, feasibility_reason = _select_latest_near_optimal_one_stop_candidate(
             feasible_candidates,
-            key=lambda candidate: candidate[1],
+            tolerance_s=ONE_STOP_SELECTION_TOLERANCE_S,
         )
         feasible = True
 
@@ -493,5 +845,10 @@ def recommend_best_strategy(
     all_ranked_plans = rank_strategy_plans(one_stop_plans, two_stop_plans, prioritize_feasible=True)
     if not all_ranked_plans:
         raise ValueError("No valid strategies were generated.")
+
+    all_ranked_plans = _apply_low_margin_soft_tie_break(
+        all_ranked_plans,
+        degradation_models=degradation_models,
+    )
 
     return all_ranked_plans[0], all_ranked_plans

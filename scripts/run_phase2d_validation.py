@@ -22,8 +22,10 @@ from src.data.loader import DataLoader
 from src.features.hybrid_modeling import build_role_based_hybrid_model, load_or_build_hybrid_dataset
 from src.simulation.strategy import estimate_pit_loss_window
 from src.simulation.strategy_validation import (
+    build_soft_preference_diagnostic,
     build_representative_scenario_suite,
     run_strategy_validation_suite,
+    save_soft_preference_diagnostic,
     save_validation_artifacts,
     validation_results_to_frame,
 )
@@ -62,8 +64,16 @@ def main() -> None:
     json_path = ROOT / "data" / "processed" / "phase2d_validation_summary.json"
     csv_path = ROOT / "data" / "processed" / "phase2d_validation_summary.csv"
     saved_paths = save_validation_artifacts(report, json_path=json_path, csv_path=csv_path)
+    soft_diag_path = ROOT / "data" / "processed" / "pre3_soft_diagnostic_summary.json"
+    soft_diagnostic = build_soft_preference_diagnostic(
+        degradation_models=deg_result,
+        pit_loss_value=pit_loss_value,
+        scenarios=scenarios,
+    )
+    save_soft_preference_diagnostic(soft_diagnostic, output_path=soft_diag_path)
 
     summary = report["aggregate_summary"]
+    strategy_mix = summary.get("strategy_mix_analysis", {})
     scenario_df = validation_results_to_frame(report)
 
     print("\nSummary:")
@@ -75,6 +85,10 @@ def main() -> None:
     print(f"  Best-plan infeasible warnings: {summary['warning_counts'].get('best-plan-infeasible', 0)}")
     print(f"  SOFT support tier: {summary['soft_compound_assessment'].get('support_tier')}")
     print(f"  SOFT weak-data signal: {summary['soft_compound_assessment']['weak_data_signal']}")
+    print(f"  SOFT-selected scenarios: {soft_diagnostic['soft_selected_case_count']}")
+    print(f"  Avg SOFT margin vs nearest non-SOFT: {soft_diagnostic['average_margin_vs_nearest_non_soft_s']}")
+    print(f"  Two-stop available in suite: {strategy_mix.get('two_stop_available_count', 0)}")
+    print(f"  Two-stop within 5s of best: {strategy_mix.get('two_stop_within_5s_count', 0)}")
 
     print("\nRepresentative outcomes:")
     display_cols = [
@@ -107,6 +121,7 @@ def main() -> None:
     print("\nArtifacts:")
     print(f"  - JSON: {saved_paths['json']}")
     print(f"  - CSV:  {saved_paths['csv']}")
+    print(f"  - SOFT diagnostic: {soft_diag_path}")
     print("=" * 88)
 
 

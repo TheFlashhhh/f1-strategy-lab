@@ -297,8 +297,19 @@ def _adjustment_weight_for_tier(support_tier: str) -> float:
     return {"High": 0.20, "Moderate": 0.35, "Low": 0.55}.get(support_tier, 0.35)
 
 
-def _adjustment_cap(compound: str) -> float:
-    return {"SOFT": 3.0, "MEDIUM": 1.5, "HARD": 1.5}.get(compound, 2.0)
+def _adjustment_cap(compound: str, support_tier: Optional[str] = None) -> float:
+    """Return the maximum allowed recency adjustment in seconds.
+
+    SOFT is the weakest-supported compound in the active stack, so we keep its
+    cross-circuit recency movement tighter when support is not high. This
+    preserves the Miami anchor rather than letting a thin recency pool shift
+    absolute Miami pace by multiple seconds.
+    """
+    if compound == "SOFT":
+        if support_tier in {"Low", "Moderate"}:
+            return 1.0
+        return 1.5
+    return 1.5
 
 
 class RoleBasedHybridModel:
@@ -329,7 +340,11 @@ class RoleBasedHybridModel:
 
         adjustment_weight = support.hybrid_adjustment_weight if support else 0.35
         weighted_delta = adjustment_weight * (recency_pred - miami_pred)
-        bounded_delta = float(np.clip(weighted_delta, -_adjustment_cap(compound), _adjustment_cap(compound)))
+        adjustment_cap = _adjustment_cap(
+            compound,
+            support.support_tier if support else None,
+        )
+        bounded_delta = float(np.clip(weighted_delta, -adjustment_cap, adjustment_cap))
         return float(miami_pred + bounded_delta)
 
     def get_model_info(self, compound: str) -> Dict:
@@ -356,6 +371,7 @@ class RoleBasedHybridModel:
             "miami_model_laps": support.miami.model_laps,
             "recency_model_laps": support.recency.model_laps,
             "hybrid_adjustment_weight": support.hybrid_adjustment_weight,
+            "hybrid_adjustment_cap": _adjustment_cap(compound, support.support_tier),
             "miami_model_type": miami_info.get("model_type"),
             "recency_model_type": recency_info.get("model_type"),
             "is_piecewise": bool(miami_info.get("is_piecewise") or recency_info.get("is_piecewise")),

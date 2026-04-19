@@ -38,7 +38,7 @@ from src.simulation.strategy import (
     optimize_pit_window,
     recommend_action,
 )
-from src.simulation.strategy_engine import recommend_best_strategy
+from src.simulation.strategy_engine import build_strategy_timing_trace, recommend_best_strategy
 from src.simulation.strategy_sensitivity import assess_strategy_stability
 
 
@@ -203,6 +203,23 @@ def main() -> None:
             f"({final_support.get('prediction_health', 'unknown')})"
         )
 
+    timing_trace = build_strategy_timing_trace(
+        degradation_models=deg_result,
+        pit_loss_value=pit_loss_value,
+        current_compound=compound,
+        current_tyre_life=current_tyre_life,
+        laps_remaining=laps_remaining,
+        next_compound=best_plan.next_compound,
+        final_compound=best_plan.final_compound,
+    )
+    if timing_trace["curve_shape"] == "flat" or timing_trace["best_on_window_edge"]:
+        band_start = min(timing_trace["near_optimal_band_laps"])
+        band_end = max(timing_trace["near_optimal_band_laps"])
+        print(
+            f"    Timing note: {timing_trace['curve_shape']} first-stop window; "
+            f"laps {band_start}-{band_end} stay within {timing_trace['near_optimal_tolerance_s']:.2f}s of the model minimum."
+        )
+
     print(f"\n  Top 5 Strategy Options (ranked by time):")
     for i, plan in enumerate(all_ranked_plans[:5], 1):
         feasible_mark = "[OK]" if plan.feasible else "[!]"
@@ -265,16 +282,16 @@ def main() -> None:
         
         print(f"\n[Pit-Loss Sensitivity] (baseline: {pit_loss_value:.2f}s)")
         if stability_assessment.pit_loss_sensitive:
-            print(f"  Status: SENSITIVE - recommendation changes under ±1-2s variation")
+            print(f"  Status: SENSITIVE - recommendation changes under +/-1-2s variation")
             for scenario in stability_assessment.pit_loss_sensitivity.scenarios:
                 if scenario.recommendation_changed:
                     delta_str = f"{scenario.pit_loss_value - pit_loss_value:+.1f}s"
                     print(
-                        f"    ○ At {delta_str}: {scenario.best_plan.next_compound} "
+                        f"    - At {delta_str}: {scenario.best_plan.next_compound} "
                         f"in {scenario.best_plan.pit_lap} lap{'s' if scenario.best_plan.pit_lap != 1 else ''}"
                     )
         else:
-            print(f"  Status: STABLE - recommendation unchanged under ±1-2s variation")
+            print(f"  Status: STABLE - recommendation unchanged under +/-1-2s variation")
         
         print(f"\n[Degradation Sensitivity] (baseline model)")
         if stability_assessment.degradation_sensitive:
@@ -283,7 +300,7 @@ def main() -> None:
                 if scenario.recommendation_changed:
                     scenario_label = "optimistic" if "optimistic" in scenario.scenario_name else "pessimistic"
                     print(
-                        f"    ○ {scenario_label.upper()}: {scenario.best_plan.next_compound} "
+                        f"    - {scenario_label.upper()}: {scenario.best_plan.next_compound} "
                         f"in {scenario.best_plan.pit_lap} lap{'s' if scenario.best_plan.pit_lap != 1 else ''}"
                     )
         else:
@@ -292,10 +309,10 @@ def main() -> None:
         if stability_assessment.flip_conditions:
             print(f"\n[Flip Conditions]")
             for condition in stability_assessment.flip_conditions:
-                print(f"  • {condition}")
+                print(f"  - {condition}")
         else:
             print(f"\n[Flip Conditions]")
-            print(f"  • None identified - recommendation is robust")
+            print(f"  - None identified - recommendation is robust")
         
         # Save sensitivity artifact
         artifact_path = ROOT / "data" / "processed" / "phase2c_sensitivity_summary.json"

@@ -54,7 +54,7 @@ from src.simulation.strategy import (
     find_optimal_pit_lap,
     optimize_pit_window,
 )
-from src.simulation.strategy_engine import recommend_best_strategy
+from src.simulation.strategy_engine import build_strategy_timing_trace, recommend_best_strategy
 from src.simulation.strategy_sensitivity import assess_strategy_stability
 
 # ============================================================================
@@ -206,7 +206,14 @@ def render_stint_timeline(best_plan):
     st.caption(stints_text)
 
 
-def render_recommendation(best_plan, pit_loss_value: float, deg_result):
+def render_recommendation(
+    best_plan,
+    pit_loss_value: float,
+    deg_result,
+    current_compound: str,
+    current_tyre_life: int,
+    laps_remaining: int,
+):
     """Render the main recommendation section with clear call-to-action."""
     st.subheader("🎯 Recommendation")
     
@@ -266,6 +273,22 @@ def render_recommendation(best_plan, pit_loss_value: float, deg_result):
         st.warning(
             f"{best_plan.next_compound} is currently a {next_support.get('support_tier', '').lower()}-support compound. "
             f"{next_support.get('support_reason', '')}"
+        )
+    timing_trace = build_strategy_timing_trace(
+        degradation_models=deg_result,
+        pit_loss_value=pit_loss_value,
+        current_compound=current_compound,
+        current_tyre_life=current_tyre_life,
+        laps_remaining=laps_remaining,
+        next_compound=best_plan.next_compound,
+        final_compound=best_plan.final_compound,
+    )
+    if timing_trace["curve_shape"] == "flat" or timing_trace["best_on_window_edge"]:
+        band_start = min(timing_trace["near_optimal_band_laps"])
+        band_end = max(timing_trace["near_optimal_band_laps"])
+        st.caption(
+            f"Timing window: {timing_trace['curve_shape']} first-stop band. "
+            f"Laps {band_start}-{band_end} stay within {timing_trace['near_optimal_tolerance_s']:.2f}s of the model minimum."
         )
 
     # Stint timeline visualization
@@ -637,7 +660,14 @@ def main():
     )
 
     # === STRATEGY SECTION ===
-    render_recommendation(best_plan, pit_loss_value, deg_result)
+    render_recommendation(
+        best_plan,
+        pit_loss_value,
+        deg_result,
+        compound,
+        current_tyre_life,
+        laps_remaining,
+    )
     st.divider()
     
     # === ALTERNATIVES SECTION ===

@@ -63,6 +63,39 @@ class DegradationEvaluationResult:
         logger.warning(message)
         self._warning_cache.add(key)
 
+    def _predict_linear_with_floor(
+        self,
+        compound: str,
+        slope: float,
+        intercept: float,
+        tyre_life: int,
+        source_key: str,
+    ) -> Optional[float]:
+        """Predict from a linear fallback while preventing pace gains from wear.
+
+        After fuel correction, a pure degradation fallback should not imply that a
+        tyre gets faster as it ages. Negative fallback slopes usually indicate
+        residual noise or a weak fit rather than a defensible wear signal, so we
+        floor them at zero for prediction-time use.
+        """
+        effective_slope = float(max(slope, 0.0))
+        if effective_slope != float(slope):
+            self._warn_once(
+                f"{compound}:{source_key}:negative_fallback_slope",
+                f"{compound} {source_key} slope {slope:.4f} implied improving pace with tyre age. "
+                "Using a zero-slope fallback for prediction-time conservatism.",
+            )
+
+        prediction = effective_slope * tyre_life + intercept
+        if pd.isna(prediction):
+            self._warn_once(
+                f"{compound}:{source_key}:linear_nan",
+                f"Linear prediction for {compound} returned NaN after fallback handling. "
+                f"Slope={effective_slope}, Intercept={intercept}.",
+            )
+            return None
+        return float(prediction)
+
     def predict_lap_time(
         self,
         compound: str,
@@ -119,33 +152,25 @@ class DegradationEvaluationResult:
                 return prediction
             # Fall back to linear within piecewise model structure
             else:
-                prediction = (
-                    pw_model.pre_cliff_slope * tyre_life
-                    + pw_model.pre_cliff_intercept
+                prediction = self._predict_linear_with_floor(
+                    compound=compound,
+                    slope=pw_model.pre_cliff_slope,
+                    intercept=pw_model.pre_cliff_intercept,
+                    tyre_life=tyre_life,
+                    source_key="piecewise_fallback",
                 )
-                if pd.isna(prediction):
-                    self._warn_once(
-                        f"{compound}:piecewise_linear_nan",
-                        f"Linear (piecewise) prediction for {compound} returned NaN. "
-                        f"Model parameters may be invalid. Falling back to None."
-                    )
-                    return None
                 return prediction
         
         # Fall back to linear model
         if compound in self.linear_models:
             lin_model = self.linear_models[compound]
-            prediction = lin_model.slope * tyre_life + lin_model.intercept
-            # Check for NaN (can happen if slope/intercept are NaN)
-            if pd.isna(prediction):
-                self._warn_once(
-                    f"{compound}:linear_nan",
-                    f"Linear prediction for {compound} returned NaN. "
-                    f"Slope={lin_model.slope}, Intercept={lin_model.intercept}. "
-                    f"Model may be invalid."
-                )
-                return None
-            return float(prediction)
+            return self._predict_linear_with_floor(
+                compound=compound,
+                slope=lin_model.slope,
+                intercept=lin_model.intercept,
+                tyre_life=tyre_life,
+                source_key="linear_model",
+            )
         
         self._warn_once(
             f"{compound}:missing_model",
