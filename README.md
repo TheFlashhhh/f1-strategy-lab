@@ -1,200 +1,181 @@
 # F1 Strategy Lab
 
-Real-time pit strategy recommendations using Phase 1 empirical modeling and Phase 2 automatic strategy optimization. Built on real Formula 1 race data with a Miami-anchored, role-based hybrid degradation model plus an honest held-out Miami backtest.
+Real-time pit strategy recommendations built on Formula 1 race data. The current system combines:
+
+- Phase 1 empirical modeling
+- Phase 2 automatic strategy optimization
+- Phase 2E calibration
+- Pre-3 defensibility and held-out backtest diagnostics
+
+The product vision is bigger than the currently implemented system. Today the engine is still a deterministic, single-car recommendation stack. Phase 3A begins the race-state and dashboard foundation needed for a replay-first race-control product.
 
 <div align="center">
   <pre>
   <b>Current State</b>: Driver on MEDIUM, tyre-life 5, 25 laps remaining
-                 ↓
-         [Degradation Models] ← Phase 1C (piecewise with cliff detection)
-         [Fuel Correction]    ← Phase 1B (removes fuel-load confound)
-         [Data Loading]       ← Phase 1A (Miami + 2026 pre-Miami races)
-                 ↓
-  <b>Output</b>: PIT in lap 1 → Switch to SOFT
-         Est. time: 2321.97 s | Feasibility: ✓
+                 ->
+         [Degradation Models] <- Phase 1C
+         [Fuel Correction]    <- Phase 1B
+         [Data Loading]       <- Phase 1A
+                 ->
+  <b>Output</b>: PIT in lap 1 -> Switch to SOFT
+         Est. time: 2321.97 s | Feasible: yes
   </pre>
 </div>
 
-**Quick Start:**
+**Quick Start**
+
 ```bash
-# Install and build data
 pip install -r requirements.txt
 python src/data/build_phase1_dataset.py
-
-# Try the interactive app
 streamlit run app/streamlit_app.py
 ```
 
 ---
 
-## 📊 Key Metrics
+## Key Metrics
 
 | Metric | Value |
 |--------|-------|
-| **Total Dataset** | 7,349 laps |
-| **Miami Historical** | 4,311 laps (2022–2025) |
-| **2026 Pre-Miami** | 3,038 laps (Australia, China, Japan) |
-| **Model-Grade Laps** | 2,049 (Miami, after filtering) |
-| **Median Pit-Loss** | 14.34 s (Miami baseline, Phase 2E calibrated) |
-| **MEDIUM Degradation** | -0.049 s/lap (corrected) |
-| **HARD Degradation** | +0.003 s/lap (corrected) |
-| **Response Time** |Sub-second |
+| Total Dataset | 7,349 laps |
+| Miami Historical | 4,311 laps (2022-2025) |
+| 2026 Pre-Miami | 3,038 laps (Australia, China, Japan) |
+| Model-Grade Laps | 2,049 (Miami, after filtering) |
+| Median Pit-Loss | 14.34 s (Miami baseline, Phase 2E calibrated) |
+| MEDIUM Degradation | -0.049 s/lap (corrected) |
+| HARD Degradation | +0.003 s/lap (corrected) |
+| Response Time | Sub-second |
 
 ---
 
-## 🚀 Features
+## Features
 
-### Phase 1: Empirical Modeling (Complete)
-- ✅ **Phase 1A:** Data loading (Miami historical + 2026 pre-Miami races, schedule-driven)
-- ✅ **Phase 1B:** Fuel correction (removes fuel-load confound from lap times)
-- ✅ **Phase 1C:** Degradation modeling with cliff detection (piecewise-linear with automatic breakpoint search)
+### Completed phases
 
-### Phase 2: Strategy Optimization
-- ✅ **Phase 2A:** Automatic strategy search and recommendation (one-stop vs two-stop, ranked by time)
-- ✅ **Phase 2B:** Hybrid data context (Miami anchor + current-season recency support)
-- ✅ **Phase 2C:** Strategy sensitivity analysis (pit-loss & degradation scenario testing, stability classification)
-- ✅ **Phase 2D:** Broader validation / robustness evaluation across a representative scenario suite
-- ✅ **Phase 2E:** Strategy search refinement / calibration (pit-loss fix, SOFT cleanup, bounded two-stop search)
-- ✅ **Pre-3:** Defensibility upgrade (explicit support tiers, role-based hybrid predictions, held-out Miami backtest)
+- Phase 1A: Data loading (Miami historical + 2026 pre-Miami races, schedule-driven)
+- Phase 1B: Fuel correction (removes fuel-load confound from lap times)
+- Phase 1C: Degradation modeling with cliff detection
+- Phase 2A: Automatic strategy search and recommendation
+- Phase 2B: Hybrid data context (Miami anchor + current-season recency support)
+- Phase 2C: Strategy sensitivity analysis
+- Phase 2D: Broader validation / robustness evaluation
+- Phase 2E: Strategy search refinement / calibration
+- Pre-3: Defensibility upgrade (support tiers, role-based hybrid predictions, held-out Miami backtest, stop-timing and pace-shape diagnostics)
 
-### Unified Pipeline
+### Planned next phases
+
+- Phase 3A: Race-state and dashboard groundwork
+- Phase 3B: Dashboard shell and driver detail experience
+- Phase 3C: Competitor-gap / undercut-overcut context
+- Phase 3D: Richer race realism (SC/VSC, traffic, weather, stochastic branching)
+
+Phase 3A is groundwork only. It adds a canonical race-state schema, extraction paths, and a dashboard data-availability audit. It does not add competitor-aware recommendation logic yet, and it does not redesign the current strategy engine.
+
+### Unified pipeline
+
 ```python
-# One-line Phase 1 integration
 from src.features.evaluate_degradation import evaluate_all_degradation
 
 result = evaluate_all_degradation(
     model_laps,
-    use_fuel_correction=True,   # Phase 1B enabled
-    use_piecewise=True,         # Phase 1C enabled with fallback
+    use_fuel_correction=True,
+    use_piecewise=True,
 )
 
-# Consistent API (works with any model type)
 lap_time = result.predict_lap_time(compound="MEDIUM", tyre_life=5)
 ```
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
-**High-level overview:**
-
-```
+```text
 f1-strategy-lab/
-├── 📱 app/
-│   ├── streamlit_app.py              ← Interactive pit app (main entry)
-│   ├── demo_strategy.py              ← Phase 2A strategy demo
-│   ├── demo_phase1b.py               ← Phase 1B fuel correction demo
-│   └── demo_phase1c.py               ← Phase 1C degradation demo
-├── 📚 src/
-│   ├── data/           Data loading & preprocessing
-│   ├── features/       Degradation & fuel correction models
-│   ├── simulation/     Pit-window optimization & strategy
-│   └── utils/          Shared utilities
-├── 🧪 tests/
-│   └── test_pipeline.py              ← Main test suite
-├── 📓 notebooks/
-│   └── eda.ipynb                     ← Exploratory analysis
-├── 📖 docs/
-│   ├── phase1_spec.md, phase1[abc]_*.md
-│   └── PHASE_1_INTEGRATION.md
-├── 🛠️ scripts/
-│   ├── validate_fuel_correction.py
-│   ├── test_phase1_integration.py
-│   └── ...
-├── requirements.txt
-├── CONTRIBUTING.md
-└── README.md
+|-- app/
+|   |-- streamlit_app.py
+|   |-- demo_strategy.py
+|   |-- demo_phase1b.py
+|   `-- demo_phase1c.py
+|-- data/
+|   |-- raw/
+|   `-- processed/
+|-- docs/
+|-- notebooks/
+|-- scripts/
+|-- src/
+|   |-- data/
+|   |-- features/
+|   |-- simulation/
+|   `-- utils/
+|-- tests/
+|-- CONTRIBUTING.md
+|-- requirements.txt
+`-- README.md
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for full structure and development guidelines.
+Main UI: `app/streamlit_app.py`  
+Main walkthrough: `app/demo_strategy.py`
 
 ---
 
-## 🎯 How to Run
+## How To Run
 
-### 1. Setup (One-time)
+### 1. Setup
 
 ```bash
-# Create environment
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1  # Windows
-source .venv/bin/activate     # macOS/Linux
-
-# Install dependencies
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-
-# Build local data (REQUIRED on first run)
 python src/data/build_phase1_dataset.py
 ```
 
-**Why local data?** Generated files (~100+ MB) are not tracked in Git. This ensures reproducibility and lets users customize data sources.
-
-### 2. Run Interactive App
+### 2. Interactive app
 
 ```bash
 streamlit run app/streamlit_app.py
 ```
 
-**What you get:**
-- 🎯 Automatic pit strategy recommendation
-- 📊 Top 5 alternative strategies ranked by time
-- 📈 Real-time model status (model type, sample count per compound)
-- ✅ Optional visibility into the latest Phase 2D representative validation summary
-- 🔧 Advanced mode: Manual pit-lap curves and deep-dive analysis
-- ⚠️ Feasibility badges and limitations
-
-### 3. Run Demo Scripts
+### 3. Core demos and validation
 
 ```bash
-# Phase 2A: Strategy recommendation
 python app/demo_strategy.py
-
-# Phase 2D: Broader validation / robustness evaluation
 python scripts/run_phase2d_validation.py
-
-# Pre-3: Compound support audit + held-out Miami backtest
 python scripts/run_pre3_backtest.py
-
-# Phase 2E: Current calibrated strategy pipeline demo
-python app/demo_strategy.py
-
-# Phase 1B: Fuel correction impact
+python scripts/run_stop_timing_audit.py
+python scripts/run_pace_shape_audit.py
+python scripts/run_phase3a_readiness.py
 python app/demo_phase1b.py
-
-# Phase 1C: Degradation modeling with cliff detection
 python app/demo_phase1c.py
 ```
 
-### 4. Run Tests
+### 4. Tests
 
 ```bash
 pytest tests/
 ```
 
-### 5. Run Utility Scripts
+### 5. Utility scripts
 
 ```bash
 python scripts/validate_fuel_correction.py
 python scripts/test_phase1_integration.py
 python scripts/run_phase2d_validation.py
+python scripts/run_phase3a_readiness.py
 python scripts/verify_data_manifest.py
 ```
 
-See [scripts/README.md](scripts/README.md) for details.
+See [scripts/README.md](scripts/README.md) for more detail.
 
 ---
 
-## 📊 Data
+## Data
 
-### Primary Source: Phase 1A (Parquet, Local-Build)
+Generated data is not tracked in Git.
 
-Generated data is **not tracked in Git**:
+- Miami historical (2022-2025): about 4,311 laps
+- 2026 pre-Miami races: about 3,038 laps
+- Ingestion manifest: `data/raw/manifest.json`
 
-1. **Miami Historical (2022–2025):** ~4,311 laps
-2. **2026 Pre-Miami:** ~3,038 laps (Australia, China, Japan)
-3. **Ingestion Manifest:** `data/raw/manifest.json`
-
-### Building Data
+Build local data with:
 
 ```bash
 python src/data/build_phase1_dataset.py
@@ -202,117 +183,153 @@ python src/data/build_phase1_dataset.py
 
 ---
 
-## 🔬 Methodology
+## Methodology
 
-### Phase 1A: Data Loading
+### Phase 1A: Data loading
+
 Load and standardize race data from multiple F1 races. See [docs/phase1a_summary.md](docs/phase1a_summary.md).
 
-### Phase 1B: Fuel Correction
+### Phase 1B: Fuel correction
+
 Remove fuel-load confound from lap times before degradation modeling.
 
-**Results on Miami 2022–2025:**
-- MEDIUM: -2.33 s/race fuel effect
-- HARD: -1.68 s/race
-- SOFT: -0.59 s/race
+See [docs/phase1b_fuel_correction.md](docs/phase1b_fuel_correction.md).
 
-**Full doc:** [docs/phase1b_fuel_correction.md](docs/phase1b_fuel_correction.md)
+### Phase 1C: Degradation modeling with cliff detection
 
-### Phase 1C: Degradation Modeling with Cliff Detection
 Detect and model mid-stint tyre-wear cliffs using piecewise regression.
 
-**Results on Miami 2022–2025:**
-- SOFT: 33 laps → Linear fallback
-- MEDIUM: 691 laps → Piecewise (cliff at tyre-life 8, RSS improvement ~15%)
-- HARD: 1,325 laps → Piecewise (cliff at tyre-life 10, RSS improvement ~13%)
+See [docs/phase1c_degradation_modeling.md](docs/phase1c_degradation_modeling.md).
 
-**Full doc:** [docs/phase1c_degradation_modeling.md](docs/phase1c_degradation_modeling.md)
+### Phase 2A: Automatic strategy recommendation
 
-### Phase 2A: Automatic Strategy Recommendation
 Search pit-window space and recommend the strategy minimizing total race time.
 
-**Key files:** `src/simulation/strategy.py`, `src/simulation/strategy_engine.py`
+Key files: `src/simulation/strategy.py`, `src/simulation/strategy_engine.py`
 
-### Phase 2B / Pre-3: Role-Based Hybrid Modeling
-Use Miami historical data as the circuit anchor and treat current-season 2026 races as a bounded recency adjustment/support signal rather than direct Miami truth.
+### Phase 2B / Pre-3: Role-based hybrid modeling
 
-### Phase 2C: Sensitivity Analysis
+Use Miami historical data as the circuit anchor and treat current-season 2026 races as bounded recency support rather than direct Miami truth.
+
+### Phase 2C: Sensitivity analysis
+
 Stress-test the baseline recommendation under pit-loss and degradation variations and label it as Stable, Moderately Sensitive, or Fragile.
 
-### Phase 2D: Broader Validation / Robustness Evaluation
-Run a compact representative scenario suite across compounds, tyre ages, and remaining-race lengths to understand where the strategy system is robust versus brittle.
+### Phase 2D: Broader validation / robustness evaluation
 
-**Artifacts:**
+Run a representative scenario suite across compounds, tyre ages, and remaining-race lengths to understand where the strategy system is robust versus brittle.
+
+Artifacts:
+
 - `data/processed/phase2d_validation_summary.json`
 - `data/processed/phase2d_validation_summary.csv`
 
-### Phase 2E: Strategy Search Refinement / Calibration
+### Phase 2E: Strategy search refinement / calibration
+
 Calibrate the strategy stack after broader validation by:
+
 - fixing race-context leakage in pit-stop and fuel-progress grouping
 - restoring a non-degenerate Miami pit-loss baseline
 - cleaning up SOFT model-health behavior
 - replacing the rough two-stop heuristic with a bounded search over valid pit-lap pairs
 
-### Pre-3: Defensibility Upgrade
+### Pre-3: Defensibility upgrade
+
 Improve how the project presents and audits model trustworthiness by:
+
 - adding explicit compound support tiers
-- replacing flat sample-level blend claims with a role-based Miami-anchor design
-- adding one honest held-out Miami decision-support backtest
+- using a role-based Miami-anchor design
+- expanding the honest held-out Miami decision-support backtest
+- adding stop-timing diagnostics
+- adding pace-shape diagnostics
+
+### Phase 3A: Race-state and dashboard groundwork
+
+Phase 3A adds the canonical race-state object model and extraction path needed for future replay-first dashboard work.
+
+It supports:
+
+- race/session identity
+- driver/team identity when available
+- current compound and tyre age
+- stint-history reconstruction
+- recommendation payload fields
+- support/confidence/risk metadata
+- placeholders for nearby competitors and future event status
+
+It does not yet add:
+
+- competitor-aware recommendations
+- traffic logic
+- SC/VSC strategy behavior
+- weather logic
+- Monte Carlo branching
+- opponent modeling
+- a full dashboard UI
+
+See [docs/phase3a_race_state_groundwork.md](docs/phase3a_race_state_groundwork.md).
 
 ---
 
-## ⚙️ Pipeline Modes
+## Pipeline Modes
 
 | Mode | Command | Fuel Correction | Degradation | Use Case |
-|------|---------|---|---|---|
-| **Integrated (Main)** | `streamlit run app/streamlit_app.py` | ✅ | Piecewise | Production pit decisions |
-| **Strategy Demo** | `python app/demo_strategy.py` | ✅ | Piecewise | Debug strategy logic |
-| **Phase 1C** | `python app/demo_phase1c.py` | ✅ | Piecewise | Validate models |
-| **Phase 1B** | `python app/demo_phase1b.py` | ✅ | Linear | Analyze fuel effects |
+|------|---------|-----------------|-------------|----------|
+| Integrated (Main) | `streamlit run app/streamlit_app.py` | yes | Piecewise | Production pit decisions |
+| Strategy Demo | `python app/demo_strategy.py` | yes | Piecewise | Debug strategy logic |
+| Phase 1C | `python app/demo_phase1c.py` | yes | Piecewise | Validate models |
+| Phase 1B | `python app/demo_phase1b.py` | yes | Linear | Analyze fuel effects |
 
 ---
 
-## ⚠️ Limitations
+## Limitations
 
-- **Single circuit:** Model validated on Miami only
-- **Deterministic:** No uncertainty quantification
-- **No traffic model:** Doesn't account for overtaking or position effects
-- **No safety cars:** Doesn't respond to VSCs or full-course yellows
-- **SOFT compound:** SOFT is now surfaced with an explicit support tier and should still be treated as less trustworthy than MEDIUM/HARD
-- **Hybrid modeling:** 2026 non-Miami data is used as bounded recency support, not as direct Miami degradation truth
-- **Backtesting scope:** The Pre-3 backtest is one honest held-out Miami decision-support check, not a full historical performance guarantee
-- **Validation scope:** Phase 2D is representative scenario validation, not Monte Carlo race simulation
-
----
-
-## 🔄 Roadmap
-
-### Phase 1 (Complete) ✅
-- ✅ Phase 1A: Data loading
-- ✅ Phase 1B: Fuel correction
-- ✅ Phase 1C: Degradation modeling with cliffs
-
-### Phase 2 (In progress) 🚀
-- ✅ Phase 2A: Automatic strategy search
-- ✅ Phase 2B: Hybrid data blending
-- ✅ Phase 2C: Scenario-based sensitivity analysis
-- ✅ Phase 2D: Representative robustness validation
-- ✅ Phase 2E: Strategy search refinement / calibration
-- ✅ Pre-3: Defensibility upgrade
+- Single circuit: the core recommendation model is still validated on Miami only.
+- Deterministic: there is no uncertainty quantification or stochastic race branching yet.
+- Current engine scope: recommendation logic is still single-car and not competitor-aware yet.
+- Phase 3A scope: Phase 3A adds schema and replay/dashboard groundwork only, not new strategy behavior.
+- No traffic model: the engine does not account for overtaking or position effects.
+- No safety-car strategy: the engine does not respond to VSC or full Safety Car conditions.
+- Hybrid modeling: 2026 non-Miami data is bounded recency support, not direct Miami degradation truth.
+- Backtesting scope: the Pre-3 backtest is honest decision-support auditing, not a historical performance guarantee.
+- Pace-shape confidence: repeated long-stint timing misses still mean the deterministic core needs more credibility work before richer Phase 3 logic.
+- Validation scope: Phase 2D is representative scenario validation, not Monte Carlo race simulation.
+- Dashboard future work: driver photos, interval gaps, track-map coordinates, weather, live race control, tyre inventory, and SC/VSC-aware strategy remain future phases.
 
 ---
 
-## 🛠️ Development
+## Roadmap
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- Code standards and patterns
-- Development workflow
-- Testing guidelines
-- Phase-specific architecture
-- Pull request process
+### Completed
+
+- Phase 1A
+- Phase 1B
+- Phase 1C
+- Phase 2A
+- Phase 2B
+- Phase 2C
+- Phase 2D
+- Phase 2E
+- Pre-3 diagnostics / defensibility work
+
+### Planned next phases
+
+- Phase 3A - Race-state and dashboard groundwork
+- Phase 3B - Dashboard shell and driver detail experience
+- Phase 3C - Competitor-gap / undercut-overcut context
+- Phase 3D - Richer race realism (SC/VSC, traffic, weather, stochastic branching)
+
+The final product vision is a replay-first race-control dashboard that can later grow into a live product. The implemented system today is smaller: it is a deterministic recommendation engine plus validation and diagnostics. Phase 3A bridges that gap by building the data model and readiness layer first.
 
 ---
 
-## 📚 Documentation
+## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for code standards, workflow, testing guidance, and architecture notes.
+
+---
+
+## Documentation
 
 - [Phase 1 Specification](docs/phase1_spec.md)
 - [Phase 1A: Data Loading](docs/phase1a_summary.md)
@@ -324,12 +341,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 - [Phase 2D: Broader Validation](docs/phase2d_validation.md)
 - [Phase 2E: Strategy Refinement](docs/phase2e_strategy_refinement.md)
 - [Pre-3: Defensibility Upgrade](docs/pre3_defensibility_upgrade.md)
+- [Pre-3: Stop-Timing Audit](docs/pre3_stop_timing_audit.md)
+- [Pre-3: Pace-Shape Audit](docs/pre3_pace_shape_audit.md)
+- [Phase 3A: Race-State Groundwork](docs/phase3a_race_state_groundwork.md)
 
 ---
 
-## 📝 License
+## License
+
 [See LICENSE file](LICENSE)
-
----
-
-**Happy strategizing!** 🏁

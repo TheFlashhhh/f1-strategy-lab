@@ -10,6 +10,8 @@ Utility scripts for data validation, notebook maintenance, and pipeline testing.
 | `test_phase1_integration.py` | Quick test of complete Phase 1 pipeline |
 | `run_phase2d_validation.py` | Run representative Phase 2D robustness validation and save artifacts |
 | `run_pre3_backtest.py` | Run the Pre-3 support audit and held-out Miami backtest |
+| `run_stop_timing_audit.py` | Trace first-stop timing curves for representative and backtest cases |
+| `run_pace_shape_audit.py` | Explain the remaining real backtest misses by pace shape and strategy structure |
 | `verify_data_manifest.py` | Validate data ingestion manifest |
 | `inspect_notebook_cells.py` | Inspect EDA notebook cell structure |
 | `cleanup_notebook_cells.py` | Remove unnecessary cells from EDA notebook |
@@ -54,6 +56,20 @@ Canonical Pre-3 defensibility workflow:
 - Saves `data/processed/pre3_compound_support_summary.json`
 - Runs a held-out Miami 2024 backtest using earlier Miami years only
 - Saves `data/processed/pre3_backtest_summary.json`
+
+### run_stop_timing_audit.py
+Canonical stop-timing inspection workflow:
+- Builds timing traces across feasible first-stop windows
+- Audits representative validation states and held-out backtest checkpoints
+- Flags flat timing bands and edge optima
+- Saves `data/processed/pre3_stop_timing_audit.json`
+
+### run_pace_shape_audit.py
+Canonical pace-shape inspection workflow:
+- Focuses on the remaining real held-out backtest misses
+- Compares model-best versus actual remaining strategy pace shapes
+- Highlights whether the miss is mainly timing, structure, compound, or a stronger pace-shape gap
+- Saves `data/processed/pre3_pace_shape_audit.json`
 
 ### verify_data_manifest.py
 Validates data ingestion manifest integrity:
