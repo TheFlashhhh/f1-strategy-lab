@@ -879,6 +879,29 @@ def load_support_lookup(project_root: Path | str = ".") -> dict[str, Mapping[str
     return payload.get("compound_support", {})
 
 
+def _build_recommendation_pipeline_context(
+    project_root: Path | str,
+    candidate_compounds: Optional[Sequence[str]] = None,
+) -> tuple[object, float, dict[str, Mapping[str, Any]]]:
+    """Build the canonical deterministic recommendation context for dashboard use."""
+    project_root = Path(project_root)
+    from src.data.loader import DataLoader
+    from src.data.preprocess import detect_pit_stops, select_relevant_columns
+
+    if candidate_compounds is None:
+        candidate_compounds = ("SOFT", "MEDIUM", "HARD")
+
+    degradation_models, _ = build_role_based_hybrid_model(project_root=project_root)
+    pit_raw = DataLoader(project_root=project_root).load_data(dataset="miami_historical")
+    pit_source_df = detect_pit_stops(select_relevant_columns(pit_raw))
+    pit_loss_value = float(pd.Series(estimate_pit_loss_window(pit_source_df)).median())
+    support_lookup = {
+        compound: degradation_models.get_support_info(compound)
+        for compound in candidate_compounds
+    }
+    return degradation_models, pit_loss_value, support_lookup
+
+
 def build_demo_race_state(
     project_root: Path | str,
     current_compound: str = "MEDIUM",
@@ -887,13 +910,9 @@ def build_demo_race_state(
 ) -> RaceState:
     """Build the canonical manual demo checkpoint used for Phase 3A examples."""
     project_root = Path(project_root)
-    from src.data.loader import DataLoader
-    from src.data.preprocess import detect_pit_stops, select_relevant_columns
-
-    degradation_models, _ = build_role_based_hybrid_model(project_root=project_root)
-    pit_raw = DataLoader(project_root=project_root).load_data(dataset="miami_historical")
-    pit_source_df = detect_pit_stops(select_relevant_columns(pit_raw))
-    pit_loss_value = float(pd.Series(estimate_pit_loss_window(pit_source_df)).median())
+    degradation_models, pit_loss_value, support_lookup = _build_recommendation_pipeline_context(
+        project_root=project_root,
+    )
 
     best_plan, _ = recommend_best_strategy(
         degradation_models=degradation_models,
@@ -921,11 +940,6 @@ def build_demo_race_state(
         next_compound=best_plan.next_compound,
         final_compound=best_plan.final_compound,
     )
-
-    support_lookup = {
-        compound: degradation_models.get_support_info(compound)
-        for compound in ["SOFT", "MEDIUM", "HARD"]
-    }
     recommendation = build_recommendation_state(
         plan_payload=asdict(best_plan),
         source="demo_strategy",
@@ -978,6 +992,184 @@ def build_demo_race_state(
     )
     state.validate()
     return state
+
+
+def extract_historical_replay_snapshot(
+    project_root: Path | str = ".",
+    season: int = 2024,
+    event_name: str = "Miami Grand Prix",
+    session_name: str = "Race",
+    lap_number: int = 5,
+    candidate_compounds: Optional[Sequence[str]] = None,
+    include_two_stop: bool = True,
+    include_extended_recommendation_context: bool = False,
+) -> list[RaceState]:
+    """Build one canonical replay snapshot as a list of driver-level race states.
+
+    Phase 3B uses this to power the replay-first dashboard shell. Each returned
+    ``RaceState`` is still a single-driver checkpoint, but all checkpoints share
+    the same race/session/lap identity so the UI can render an order panel and a
+    selected-driver drawer from one consistent canonical shape.
+    """
+    project_root = Path(project_root)
+    replay_path = project_root / "data" / "raw" / "miami_historical" / "combined.parquet"
+    if not replay_path.exists():
+        raise FileNotFoundError(f"Canonical replay dataset missing: {replay_path}")
+
+    if candidate_compounds is None:
+        candidate_compounds = ("SOFT", "MEDIUM", "HARD")
+
+    replay_df = pd.read_parquet(replay_path)
+    event_df = replay_df[
+        (replay_df["season"] == season)
+        & (replay_df["event_name"] == event_name)
+        & (replay_df["session_name"] == session_name)
+    ].copy()
+    if event_df.empty:
+        raise ValueError(
+            f"No replay rows found for season={season}, event={event_name}, session={session_name}"
+        )
+
+    lap_slice = event_df[event_df["lap_number"] == lap_number].copy()
+    if lap_slice.empty:
+        raise ValueError(
+            f"No replay rows found for season={season}, event={event_name}, session={session_name}, lap={lap_number}"
+        )
+
+    total_laps = _int_or_none(event_df["lap_number"].max())
+    laps_remaining = max((total_laps or lap_number) - lap_number, 0)
+    race_id = f"{season}:{_slugify(event_name)}:{_slugify(session_name)}:lap_{lap_number}"
+    degradation_models, pit_loss_value, support_lookup = _build_recommendation_pipeline_context(
+        project_root=project_root,
+        candidate_compounds=candidate_compounds,
+    )
+
+    ordered_lap_slice = lap_slice.sort_values(["position", "driver"], na_position="last").copy()
+    race_states: list[RaceState] = []
+
+    for _, row in ordered_lap_slice.iterrows():
+        driver_code = str(row["driver"])
+        driver_event_laps = event_df[event_df["driver"] == driver_code].sort_values("lap_number").copy()
+        driver_laps_to_checkpoint = driver_event_laps[driver_event_laps["lap_number"] <= lap_number].copy()
+
+        current_position = _int_or_none(row.get("position"))
+        start_position = (
+            _int_or_none(driver_event_laps["position"].dropna().iloc[0])
+            if driver_event_laps["position"].notna().any()
+            else None
+        )
+        position_change = None
+        if start_position is not None and current_position is not None:
+            position_change = start_position - current_position
+
+        current_compound = _string_or_none(row.get("compound"))
+        tyre_age_laps = _int_or_none(row.get("tyre_life"))
+        current_stint_number = _int_or_none(row.get("stint"))
+        recommendation = None
+        notes = [
+            "Historical replay checkpoint built from canonical lap-level race data.",
+            "Displayed recommendations are overlays from the current deterministic engine, not reconstructed live team calls.",
+        ]
+
+        if current_compound is not None and tyre_age_laps is not None:
+            try:
+                best_plan, _ = recommend_best_strategy(
+                    degradation_models=degradation_models,
+                    pit_loss_value=pit_loss_value,
+                    current_compound=current_compound,
+                    current_tyre_life=tyre_age_laps,
+                    laps_remaining=laps_remaining,
+                    candidate_compounds=list(candidate_compounds),
+                    include_two_stop=include_two_stop,
+                )
+                confidence_label = None
+                confidence_reason = None
+                extra_risk_notes: list[str] = []
+                timing_trace = None
+                if include_extended_recommendation_context:
+                    stability = assess_strategy_stability(
+                        baseline_plan=best_plan,
+                        pit_loss_value=pit_loss_value,
+                        degradation_models=degradation_models,
+                        current_compound=current_compound,
+                        current_tyre_life=tyre_age_laps,
+                        laps_remaining=laps_remaining,
+                    )
+                    timing_trace = build_strategy_timing_trace(
+                        degradation_models=degradation_models,
+                        pit_loss_value=pit_loss_value,
+                        current_compound=current_compound,
+                        current_tyre_life=tyre_age_laps,
+                        laps_remaining=laps_remaining,
+                        next_compound=best_plan.next_compound,
+                        final_compound=best_plan.final_compound,
+                    )
+                    confidence_label = stability.stability_label
+                    confidence_reason = (
+                        "Phase 2C sensitivity classification applied to the selected replay checkpoint state."
+                    )
+                    extra_risk_notes = list(stability.flip_conditions)
+                recommendation = build_recommendation_state(
+                    plan_payload=asdict(best_plan),
+                    source="historical_replay_overlay",
+                    lap_number=lap_number,
+                    support_lookup=support_lookup,
+                    confidence_label=confidence_label,
+                    confidence_reason=confidence_reason,
+                    extra_risk_notes=extra_risk_notes,
+                    timing_trace=timing_trace,
+                )
+            except Exception as exc:
+                notes.append(f"Recommendation overlay unavailable for {driver_code}: {exc}")
+        else:
+            notes.append(
+                "Current compound or tyre age is missing on this replay row, so a recommendation overlay could not be built."
+            )
+
+        state = RaceState(
+            state_id=f"replay:{season}:{_slugify(event_name)}:{lap_number}:{_slugify(driver_code)}",
+            source_type="historical_replay_snapshot",
+            source_reference=str(replay_path.relative_to(project_root)),
+            race_id=race_id,
+            season=season,
+            event_name=event_name,
+            session_name=session_name,
+            circuit_name=str(row["circuit_name"]),
+            circuit_id=_slugify(_string_or_none(row.get("circuit_name"))),
+            lap_number=lap_number,
+            laps_remaining=laps_remaining,
+            total_laps=total_laps,
+            selected_driver=DriverState(
+                driver_code=driver_code,
+                display_name=driver_code,
+                team_name=_string_or_none(row.get("team")),
+                current_compound=current_compound or "UNKNOWN",
+                tyre_age_laps=tyre_age_laps or 0,
+                start_position=start_position,
+                current_position=current_position,
+                position_change=position_change,
+                current_stint_number=current_stint_number,
+                stint_history=build_stint_history(driver_laps_to_checkpoint),
+            ),
+            competitor_context=build_competitor_context_from_order(
+                lap_slice=ordered_lap_slice,
+                current_position=current_position,
+            ),
+            recommendation=recommendation,
+            event_status=EventStatus(track_status=_string_or_none(row.get("track_status"))),
+            notes=notes,
+        )
+        state.validate()
+        race_states.append(state)
+
+    race_states.sort(
+        key=lambda state: (
+            state.selected_driver.current_position is None,
+            state.selected_driver.current_position if state.selected_driver.current_position is not None else 999,
+            state.selected_driver.driver_code or "",
+        )
+    )
+    return race_states
 
 
 def race_state_from_phase2d_scenario_result(

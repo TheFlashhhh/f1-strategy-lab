@@ -51,6 +51,8 @@ Phase 3A does **not** implement that dynamic logic yet.
 
 Phase 3A only makes sure the canonical checkpoint schema is ready for that future behavior.
 
+Phase 3B now uses this groundwork in the canonical Streamlit app, but this document stays focused on the Phase 3A foundation itself.
+
 ## Why Replay / Historical Support Comes First
 
 Replay-first is the right build order because the repository already has:
@@ -102,6 +104,7 @@ Phase 3A can now build canonical race-state objects from:
 - the manual demo scenario shape
 - Phase 2D representative validation scenarios
 - Pre-3 held-out backtest checkpoints
+- replay-style full-lap historical snapshots for the Phase 3B dashboard shell
 
 This matters because future UI work should consume one canonical object shape instead of inventing separate ad hoc payloads for demo, validation, and replay cases.
 
@@ -125,12 +128,15 @@ The repository now explicitly distinguishes:
 
 ### Phase 3B: Dashboard shell and driver detail experience
 
+This is now the direct follow-on phase that consumes the Phase 3A schema.
+
 Expected focus:
 
 - replay-first dashboard shell
 - driver selection flow
 - driver detail drawer / overlay
 - presentation of canonical race-state objects
+- schematic circuit placeholder until real coordinates exist
 
 Still not the place for full rival-aware strategy logic.
 
@@ -180,7 +186,7 @@ It still does **not** support:
 Phase 3A means:
 
 - the repo is ready to standardize race-state checkpoints
-- the repo is ready to begin replay-first dashboard work
+- the repo is ready to support replay-first dashboard work
 - the repo is **not** yet ready to claim rich race realism or competitor-aware strategy behavior
 
 That is the correct scope boundary for this phase.
