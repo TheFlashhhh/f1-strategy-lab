@@ -153,3 +153,6 @@ data/raw/fastf1_cache/
 check_*.py
 verify_*.py
 pipeline_output.txt
+
+__pycache__/
+*.py[cod]
