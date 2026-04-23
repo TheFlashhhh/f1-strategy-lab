@@ -7,7 +7,7 @@ Real-time pit strategy recommendations built on Formula 1 race data. The current
 - Phase 2E calibration
 - Pre-3 defensibility and held-out backtest diagnostics
 
-The product vision is bigger than the currently implemented system. Today the engine is still a deterministic, single-car recommendation stack. Phase 3A begins the race-state and dashboard foundation needed for a replay-first race-control product.
+The product vision is bigger than the currently implemented system. Today the engine is still a deterministic, single-car recommendation stack, but the repository now also includes Phase 3A race-state groundwork and a Phase 3B replay-first dashboard shell built on top of it.
 
 <div align="center">
   <pre>
@@ -61,14 +61,14 @@ streamlit run app/streamlit_app.py
 - Phase 2E: Strategy search refinement / calibration
 - Pre-3: Defensibility upgrade (support tiers, role-based hybrid predictions, held-out Miami backtest, stop-timing and pace-shape diagnostics)
 
-### Planned next phases
+### Product-shell phases
 
 - Phase 3A: Race-state and dashboard groundwork
-- Phase 3B: Dashboard shell and driver detail experience
-- Phase 3C: Competitor-gap / undercut-overcut context
-- Phase 3D: Richer race realism (SC/VSC, traffic, weather, stochastic branching)
+- Phase 3B: Replay-first dashboard shell and driver detail experience
+- Planned next: Phase 3C competitor-gap / undercut-overcut context
+- Planned next: Phase 3D richer race realism (SC/VSC, traffic, weather, stochastic branching)
 
-Phase 3A is groundwork only. It adds a canonical race-state schema, extraction paths, and a dashboard data-availability audit. It does not add competitor-aware recommendation logic yet, and it does not redesign the current strategy engine.
+Phase 3A and 3B are still intentionally limited. They add the canonical race-state model and a replay-first UI shell, and the latest Phase 3B.5 pass moves the primary race-control surface into a custom Streamlit component. They do not add competitor-aware recommendation logic yet and they do not redesign the underlying strategy engine.
 
 ### Unified pipeline
 
@@ -95,6 +95,12 @@ f1-strategy-lab/
 |   |-- demo_strategy.py
 |   |-- demo_phase1b.py
 |   `-- demo_phase1c.py
+|-- assets/
+|   |-- asset_manifest.json
+|   |-- team_logos/
+|   `-- driver_photos/
+|-- components/
+|   `-- race_control_board/
 |-- data/
 |   |-- raw/
 |   `-- processed/
@@ -133,6 +139,19 @@ python src/data/build_phase1_dataset.py
 ```bash
 streamlit run app/streamlit_app.py
 ```
+
+The canonical app now opens in a replay-first dashboard shell:
+
+- a custom race-control board surface for circuit, leaderboard, and selected-driver interaction
+- darker, tighter schematic circuit-view placeholder
+- dense timing / order panel with row-style selection instead of repeated generic controls
+- compact selected-driver tactical drawer integrated into the board
+- optional local-first team logos and driver photos when supplied through `assets/asset_manifest.json`
+- team-color-aware selected-state accents for the board, pit-call card, and analysis drawer
+- strategy-strip stint history and race-call recommendation card
+- brighter race-control header, lighter source sidebar, and a Race Control / Analysis split so deep analysis stays out of the primary tactical screen
+- a native Analysis selected-car summary path that renders from structured Python data instead of component HTML fragments
+- a final small color-separation polish where circuit markers use team color while timing-table tyre pills stay compound-colored
 
 ### 3. Core demos and validation
 
@@ -269,6 +288,34 @@ It does not yet add:
 
 See [docs/phase3a_race_state_groundwork.md](docs/phase3a_race_state_groundwork.md).
 
+### Phase 3B: Replay-first dashboard shell
+
+Phase 3B uses the Phase 3A checkpoint model inside the canonical Streamlit app.
+
+It adds:
+
+- a replay-first race-control layout in `app/streamlit_app.py`
+- a custom Streamlit Components v2 race-control surface for the circuit, timing leaderboard, and selected-driver drawer
+- a dark compact schematic circuit-view placeholder with tighter map occupancy for stable ordered marker placement
+- a dense timing/order panel built from canonical race-state objects
+- a compact selected-driver tactical panel
+- a local-first asset manifest for optional team logos and driver photos with graceful fallback when assets are missing
+- team-color accents on selected timing rows, track halos, and current-call surfaces
+- a visual stint strip and cleaner race-call recommendation surface
+- a Race Control / Analysis view switch that keeps alternatives, sensitivity, model context, and timing curves secondary and more compact
+
+It still does not add:
+
+- live timing ingestion
+- exact interval-gap timing
+- real telemetry coordinates
+- competitor-aware strategy logic
+- SC/VSC, weather, traffic, or Monte Carlo behavior
+- exact live race-control behavior
+
+See [docs/phase3b_dashboard_shell.md](docs/phase3b_dashboard_shell.md).
+See [docs/phase3b_custom_component.md](docs/phase3b_custom_component.md).
+
 ---
 
 ## Pipeline Modes
@@ -287,14 +334,14 @@ See [docs/phase3a_race_state_groundwork.md](docs/phase3a_race_state_groundwork.m
 - Single circuit: the core recommendation model is still validated on Miami only.
 - Deterministic: there is no uncertainty quantification or stochastic race branching yet.
 - Current engine scope: recommendation logic is still single-car and not competitor-aware yet.
-- Phase 3A scope: Phase 3A adds schema and replay/dashboard groundwork only, not new strategy behavior.
+- Phase 3A/3B scope: the race-state model and dashboard shell are product-structure work, not new strategy behavior.
 - No traffic model: the engine does not account for overtaking or position effects.
 - No safety-car strategy: the engine does not respond to VSC or full Safety Car conditions.
 - Hybrid modeling: 2026 non-Miami data is bounded recency support, not direct Miami degradation truth.
 - Backtesting scope: the Pre-3 backtest is honest decision-support auditing, not a historical performance guarantee.
 - Pace-shape confidence: repeated long-stint timing misses still mean the deterministic core needs more credibility work before richer Phase 3 logic.
 - Validation scope: Phase 2D is representative scenario validation, not Monte Carlo race simulation.
-- Dashboard future work: driver photos, interval gaps, track-map coordinates, weather, live race control, tyre inventory, and SC/VSC-aware strategy remain future phases.
+- Dashboard future work: interval gaps, live track-map coordinates, tyre inventory, weather, and true live race control remain future phases. Logos and driver photos are now optional local assets only; nothing is auto-downloaded.
 
 ---
 
@@ -311,15 +358,15 @@ See [docs/phase3a_race_state_groundwork.md](docs/phase3a_race_state_groundwork.m
 - Phase 2D
 - Phase 2E
 - Pre-3 diagnostics / defensibility work
+- Phase 3A race-state and dashboard groundwork
+- Phase 3B replay-first dashboard shell
 
 ### Planned next phases
 
-- Phase 3A - Race-state and dashboard groundwork
-- Phase 3B - Dashboard shell and driver detail experience
 - Phase 3C - Competitor-gap / undercut-overcut context
 - Phase 3D - Richer race realism (SC/VSC, traffic, weather, stochastic branching)
 
-The final product vision is a replay-first race-control dashboard that can later grow into a live product. The implemented system today is smaller: it is a deterministic recommendation engine plus validation and diagnostics. Phase 3A bridges that gap by building the data model and readiness layer first.
+The final product vision is a replay-first race-control dashboard that can later grow into a live product. The implemented system today now includes the Phase 3A checkpoint layer and the Phase 3B replay shell, but the strategy core is still deterministic and not yet competitor-aware.
 
 ---
 
@@ -344,6 +391,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for code standards, workflow, testing gui
 - [Pre-3: Stop-Timing Audit](docs/pre3_stop_timing_audit.md)
 - [Pre-3: Pace-Shape Audit](docs/pre3_pace_shape_audit.md)
 - [Phase 3A: Race-State Groundwork](docs/phase3a_race_state_groundwork.md)
+- [Phase 3B: Dashboard Shell](docs/phase3b_dashboard_shell.md)
+- [Phase 3B.5: Custom Race-Control Component](docs/phase3b_custom_component.md)
+- [Assets Pipeline](assets/README.md)
 
 ---
 
