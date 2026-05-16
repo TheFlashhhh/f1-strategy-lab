@@ -25,8 +25,7 @@ from typing import Any, Iterable, Literal, Mapping, Optional, Sequence
 
 import pandas as pd
 
-from src.features.hybrid_modeling import build_role_based_hybrid_model
-from src.simulation.strategy import estimate_pit_loss_window
+from src.race_config import build_race_strategy_context
 from src.simulation.strategy_engine import build_strategy_timing_trace, recommend_best_strategy
 from src.simulation.strategy_sensitivity import assess_strategy_stability
 
@@ -882,19 +881,20 @@ def load_support_lookup(project_root: Path | str = ".") -> dict[str, Mapping[str
 def _build_recommendation_pipeline_context(
     project_root: Path | str,
     candidate_compounds: Optional[Sequence[str]] = None,
+    race_key: str = "miami_2026",
 ) -> tuple[object, float, dict[str, Mapping[str, Any]]]:
     """Build the canonical deterministic recommendation context for dashboard use."""
     project_root = Path(project_root)
-    from src.data.loader import DataLoader
-    from src.data.preprocess import detect_pit_stops, select_relevant_columns
 
     if candidate_compounds is None:
         candidate_compounds = ("SOFT", "MEDIUM", "HARD")
 
-    degradation_models, _ = build_role_based_hybrid_model(project_root=project_root)
-    pit_raw = DataLoader(project_root=project_root).load_data(dataset="miami_historical")
-    pit_source_df = detect_pit_stops(select_relevant_columns(pit_raw))
-    pit_loss_value = float(pd.Series(estimate_pit_loss_window(pit_source_df)).median())
+    race_context = build_race_strategy_context(
+        project_root=project_root,
+        race_key=race_key,
+    )
+    degradation_models = race_context.degradation_model
+    pit_loss_value = race_context.pit_loss.value_s
     support_lookup = {
         compound: degradation_models.get_support_info(compound)
         for compound in candidate_compounds

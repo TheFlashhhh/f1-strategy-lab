@@ -12,6 +12,8 @@ Utility scripts for data validation, notebook maintenance, and pipeline testing.
 | `run_pre3_backtest.py` | Run the Pre-3 support audit and held-out Miami backtest |
 | `run_stop_timing_audit.py` | Trace first-stop timing curves for representative and backtest cases |
 | `run_pace_shape_audit.py` | Explain the remaining real backtest misses by pace shape and strategy structure |
+| `build_race_pack.py` | Build ignored race activation artifacts such as the Canada 2026 readiness pack |
+| `run_canada_strategy_sanity.py` | Run Canada representative manual-snapshot sanity cases and write a race-weekend playbook |
 | `verify_data_manifest.py` | Validate data ingestion manifest |
 | `inspect_notebook_cells.py` | Inspect EDA notebook cell structure |
 | `cleanup_notebook_cells.py` | Remove unnecessary cells from EDA notebook |
@@ -70,6 +72,28 @@ Canonical pace-shape inspection workflow:
 - Compares model-best versus actual remaining strategy pace shapes
 - Highlights whether the miss is mainly timing, structure, compound, or a stronger pace-shape gap
 - Saves `data/processed/pre3_pace_shape_audit.json`
+
+### build_race_pack.py
+Race activation pack builder:
+- Supports `miami_2026` and `canada_2026`
+- Saves a manifest, compound support summary, pit-loss estimate, pit-loss audit CSV, baseline strategies, and readiness report
+- Writes under `data/processed/race_packs/<race_key>/`
+- Use `--fetch-historical` to attempt local FastF1 ingestion for the configured historical race data
+
+Canada readiness workflow:
+
+```bash
+python scripts/build_race_pack.py --race canada_2026 --fetch-historical
+python scripts/build_race_pack.py --race canada_2026
+python scripts/run_canada_strategy_sanity.py
+```
+
+### run_canada_strategy_sanity.py
+Canada race-weekend sanity workflow:
+- Uses the canonical Canada race config and strategy engine
+- Checks representative manual snapshots across MEDIUM, HARD, SOFT, and high tyre-age cases
+- Saves `strategy_sanity_cases.csv`, `strategy_sanity_summary.json`, and `race_weekend_playbook.md`
+- Writes under `data/processed/race_packs/canada_2026/`
 
 ### verify_data_manifest.py
 Validates data ingestion manifest integrity:

@@ -72,9 +72,53 @@ class DataLoader:
             return self._load_miami_historical()
         elif dataset == "season_2026_pre_miami":
             return self._load_2026_pre_miami()
+        elif (self.data_dir / dataset).exists():
+            return self._load_parquet_group(dataset)
         else:
             # Try as CSV filename
             return self._load_csv_fallback(dataset, fallback)
+
+    def _load_parquet_group(self, dataset: str) -> pd.DataFrame:
+        """Load a generic raw Parquet data group.
+
+        Race activation packs can add new ignored raw groups such as
+        ``canada_historical`` without needing a bespoke loader branch for each
+        circuit. The group follows the same convention as the Phase 1A Miami
+        data: prefer ``combined.parquet`` and otherwise concatenate individual
+        race/session Parquet files.
+        """
+        group_dir = self.data_dir / dataset
+        combined_path = group_dir / "combined.parquet"
+
+        if combined_path.exists():
+            logger.info("Loading %s from Parquet: %s", dataset, combined_path)
+            df = pd.read_parquet(combined_path)
+            return self._normalize_schema(df)
+
+        race_files = sorted(
+            pf for pf in group_dir.glob("*.parquet")
+            if pf.name != "combined.parquet"
+        )
+        if not race_files:
+            raise FileNotFoundError(
+                f"No Parquet files found for data group {dataset}: {group_dir}"
+            )
+
+        dfs = []
+        for parquet_path in race_files:
+            try:
+                df = pd.read_parquet(parquet_path)
+                dfs.append(df)
+                logger.info("  Loaded %s laps from %s", len(df), parquet_path.name)
+            except Exception as exc:
+                logger.warning("Failed to load %s: %s", parquet_path, exc)
+
+        if not dfs:
+            raise FileNotFoundError(
+                f"No readable Parquet files found for data group {dataset}: {group_dir}"
+            )
+
+        return self._normalize_schema(pd.concat(dfs, ignore_index=True))
 
     def _load_miami_historical(self) -> pd.DataFrame:
         """Load Miami historical combined Parquet (2022–2025)."""

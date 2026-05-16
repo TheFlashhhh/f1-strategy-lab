@@ -157,6 +157,7 @@ The canonical app now opens in a replay-first dashboard shell:
 
 ```bash
 python app/demo_strategy.py
+python scripts/build_race_pack.py --race canada_2026
 python scripts/run_phase2d_validation.py
 python scripts/run_pre3_backtest.py
 python scripts/run_stop_timing_audit.py
@@ -178,6 +179,7 @@ pytest tests/
 python scripts/validate_fuel_correction.py
 python scripts/test_phase1_integration.py
 python scripts/run_phase2d_validation.py
+python scripts/build_race_pack.py --race canada_2026
 python scripts/run_phase3a_readiness.py
 python scripts/verify_data_manifest.py
 ```
@@ -192,6 +194,7 @@ Generated data is not tracked in Git.
 
 - Miami historical (2022-2025): about 4,311 laps
 - 2026 pre-Miami races: about 3,038 laps
+- Race activation packs, including Canada 2026 readiness artifacts, are generated under `data/processed/race_packs/`
 - Ingestion manifest: `data/raw/manifest.json`
 
 Build local data with:
@@ -332,6 +335,7 @@ See [docs/phase3b_custom_component.md](docs/phase3b_custom_component.md).
 ## Limitations
 
 - Single circuit: the core recommendation model is still validated on Miami only.
+- Canada 2026 activation: available as a race-weekend manual snapshot slice, but it is cautious unless local `canada_historical` FastF1 data has been generated.
 - Deterministic: there is no uncertainty quantification or stochastic race branching yet.
 - Current engine scope: recommendation logic is still single-car and not competitor-aware yet.
 - Phase 3A/3B scope: the race-state model and dashboard shell are product-structure work, not new strategy behavior.

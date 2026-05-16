@@ -15,6 +15,7 @@ Run as: streamlit run app/streamlit_app.py
 from __future__ import annotations
 
 import base64
+from dataclasses import asdict
 import json
 import mimetypes
 from pathlib import Path
@@ -56,20 +57,28 @@ from components.race_control_board import (
     race_control_board_available,
     render_race_control_board,
 )
-from src.data.loader import DataLoader
-from src.data.preprocess import detect_pit_stops, select_relevant_columns
 from src.features.hybrid_modeling import (
-    build_role_based_hybrid_model,
     load_or_build_hybrid_dataset,
     summarize_hybrid_context,
 )
+from src.race_config import (
+    RaceStrategyContext,
+    append_recommendation_ledger_entry,
+    build_race_strategy_context,
+    confidence_label_for_context,
+    list_race_configs,
+)
 from src.simulation.race_state import (
+    CompetitorGapContext,
+    DriverState,
+    EventStatus,
     RaceState,
-    build_demo_race_state,
+    StintSummary,
+    build_recommendation_state,
     extract_historical_replay_snapshot,
     extract_race_states_from_phase2d_artifact,
 )
-from src.simulation.strategy import estimate_pit_loss_window, optimize_pit_window
+from src.simulation.strategy import optimize_pit_window
 from src.simulation.strategy_engine import build_strategy_timing_trace, recommend_best_strategy
 from src.simulation.strategy_sensitivity import assess_strategy_stability
 
@@ -158,17 +167,9 @@ def load_hybrid_context() -> dict:
 
 
 @st.cache_data
-def build_integrated_pipeline() -> tuple:
-    """Build the canonical role-based hybrid model plus Miami pit-loss baseline."""
-    deg_result, _ = build_role_based_hybrid_model(project_root=ROOT)
-    pit_loader = DataLoader(project_root=ROOT)
-    pit_raw = pit_loader.load_data(dataset="miami_historical")
-    pit_source_df = detect_pit_stops(select_relevant_columns(pit_raw))
-    pit_loss_samples = estimate_pit_loss_window(pit_source_df)
-    if len(pit_loss_samples) == 0:
-        raise ValueError("No valid pit-loss samples were produced from the dataset.")
-    pit_loss_value = float(np.median(pit_loss_samples))
-    return deg_result, pit_loss_value, int(len(pit_loss_samples))
+def build_integrated_pipeline(race_key: str) -> RaceStrategyContext:
+    """Build the race-aware context around the existing deterministic engine."""
+    return build_race_strategy_context(project_root=ROOT, race_key=race_key)
 
 
 @st.cache_data
@@ -469,6 +470,14 @@ def _compact_recommendation_summary(recommendation: Any) -> str:
     if recommendation is None:
         return "Overlay unavailable"
     target = recommendation.next_compound or "TBD"
+    if recommendation.near_optimal_pit_window:
+        band_start = min(recommendation.near_optimal_pit_window)
+        band_end = max(recommendation.near_optimal_pit_window)
+        if band_start <= 1 and band_end <= 1:
+            return f"Pit now -> {target}"
+        if band_start == band_end:
+            return f"Pit +{band_start} -> {target}"
+        return f"Pit +{band_start}-{band_end} -> {target}"
     if recommendation.pit_in_laps is None:
         return f"Target {target}"
     if recommendation.pit_in_laps <= 1:
@@ -494,6 +503,14 @@ def _format_call_title(recommendation: Any) -> str:
     if recommendation is None:
         return "Overlay unavailable"
     target = recommendation.next_compound or "TBD"
+    if recommendation.near_optimal_pit_window:
+        band_start = min(recommendation.near_optimal_pit_window)
+        band_end = max(recommendation.near_optimal_pit_window)
+        if band_start <= 1 and band_end <= 1:
+            return f"Pit now -> {target}"
+        if band_start == band_end:
+            return f"Pit window +{band_start} lap -> {target}"
+        return f"Pit window +{band_start}-+{band_end} laps -> {target}"
     if recommendation.pit_in_laps is None:
         return f"Target {target}"
     if recommendation.pit_in_laps <= 1:
@@ -523,8 +540,8 @@ def _format_call_window(recommendation: Any) -> str | None:
     band_start = min(recommendation.near_optimal_pit_window)
     band_end = max(recommendation.near_optimal_pit_window)
     if band_start == band_end:
-        return f"Window edge: lap {band_start}"
-    return f"Near-optimal window: laps {band_start}-{band_end}"
+        return f"Near-optimal pit timing: +{band_start} lap"
+    return f"Near-optimal pit timing: +{band_start} to +{band_end} laps"
 
 
 def _track_status_label(track_status: str | None) -> str:
@@ -1186,7 +1203,7 @@ def render_page_header() -> None:
         <div class="race-header">
             <div>
                 <div class="race-title">F1 Strategy Lab</div>
-                <div class="race-subtitle">Race-control replay surface | Miami strategy lab</div>
+                <div class="race-subtitle">Race-control replay surface | race-weekend strategy lab</div>
             </div>
             <div class="status-strip">
                 <span class="status-pill">Phase 3B</span>
@@ -1199,20 +1216,72 @@ def render_page_header() -> None:
     )
 
 
-def render_sidebar_controls(available_compounds: list[str]) -> dict[str, Any]:
+def render_race_selector() -> str:
+    """Render race selection before the strategy context is built."""
+    st.sidebar.markdown("### Race")
+    race_configs = list_race_configs()
+    selected_key = st.sidebar.selectbox(
+        "Race",
+        options=[config.key for config in race_configs],
+        format_func=lambda key: next(
+            config.label for config in race_configs if config.key == key
+        ),
+        help="Select which race activation settings to use.",
+    )
+    return str(selected_key)
+
+
+def _optional_int_from_text(value: Any) -> Optional[int]:
+    """Parse an optional integer UI field."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def _optional_float_from_text(value: Any) -> Optional[float]:
+    """Parse an optional float UI field."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def render_sidebar_controls(
+    available_compounds: list[str],
+    race_context: RaceStrategyContext,
+) -> dict[str, Any]:
     """Render dashboard-source controls."""
+    race_config = race_context.race_config
     st.sidebar.markdown("### Source")
-    source_mode = st.sidebar.selectbox(
-        "Snapshot type",
-        options=[
+    source_options = [
+        "Manual live snapshot",
+        "Manual demo scenario",
+    ]
+    if race_config.key == "miami_2026":
+        source_options = [
             "Historical replay checkpoint",
             "Representative validation scenario",
+            "Manual live snapshot",
             "Manual demo scenario",
-        ],
-        help="Replay checkpoints are the main Phase 3B path. Validation and demo modes remain available as shell-compatible inputs.",
+        ]
+
+    source_mode = st.sidebar.selectbox(
+        "Snapshot type",
+        options=source_options,
+        help="Manual snapshots are race activation inputs. Miami replay checkpoints remain available as the validated baseline shell.",
     )
 
-    controls: dict[str, Any] = {"source_mode": source_mode}
+    controls: dict[str, Any] = {
+        "race_key": race_config.key,
+        "source_mode": source_mode,
+    }
 
     if source_mode == "Historical replay checkpoint":
         checkpoint_options = _pre3_checkpoint_options()
@@ -1234,6 +1303,65 @@ def render_sidebar_controls(available_compounds: list[str]) -> dict[str, Any]:
             "Validation scenario",
             options=scenario_options,
             format_func=lambda scenario_id: scenario_id.replace("_", " "),
+        )
+    elif source_mode == "Manual live snapshot":
+        st.sidebar.caption(
+            "Manual fields are inputs only; there is no live timing ingestion in this sprint."
+        )
+        default_current = (
+            race_config.default_compound
+            if race_config.default_compound in available_compounds
+            else available_compounds[0]
+        )
+        max_current_lap = max(1, race_config.total_laps - 2)
+        default_lap = min(max(race_config.default_current_lap, 1), max_current_lap)
+        controls["manual_current_lap"] = st.sidebar.slider(
+            "Current lap",
+            min_value=1,
+            max_value=max_current_lap,
+            value=default_lap,
+        )
+        controls["manual_driver_code"] = st.sidebar.text_input(
+            "Selected driver",
+            value=race_config.default_driver_code,
+            help="Driver code or short label for the manual snapshot.",
+        )
+        controls["manual_team_name"] = st.sidebar.text_input(
+            "Team",
+            value="",
+            help="Optional team name for display only.",
+        )
+        controls["manual_compound"] = st.sidebar.selectbox(
+            "Current compound",
+            options=available_compounds,
+            index=available_compounds.index(default_current),
+        )
+        controls["manual_tyre_life"] = st.sidebar.slider(
+            "Current tyre age",
+            min_value=1,
+            max_value=50,
+            value=min(max(race_config.default_tyre_age, 1), 50),
+        )
+        controls["manual_position_text"] = st.sidebar.text_input(
+            "Position",
+            value="",
+            help="Optional race position. Display only; not competitor-aware optimization.",
+        )
+        gap_cols = st.sidebar.columns(2)
+        controls["manual_gap_ahead_text"] = gap_cols[0].text_input(
+            "Gap ahead",
+            value="",
+            help="Optional seconds. Display only.",
+        )
+        controls["manual_gap_behind_text"] = gap_cols[1].text_input(
+            "Gap behind",
+            value="",
+            help="Optional seconds. Display only.",
+        )
+        controls["manual_flag_state"] = st.sidebar.selectbox(
+            "Race flags",
+            options=["Green", "Yellow", "VSC", "Safety Car"],
+            help="Flag state is surfaced as a caveat; it does not change the optimizer.",
         )
     else:
         default_current = "MEDIUM" if "MEDIUM" in available_compounds else available_compounds[0]
@@ -1264,8 +1392,193 @@ def render_sidebar_controls(available_compounds: list[str]) -> dict[str, Any]:
     return controls
 
 
+def _track_status_from_flag(flag_state: str) -> str:
+    """Map manual flag selection to a compact status label."""
+    return {
+        "Green": "1",
+        "Yellow": "yellow",
+        "VSC": "vsc",
+        "Safety Car": "sc",
+    }.get(flag_state, "1")
+
+
+def _safe_state_token(value: Any) -> str:
+    """Return a stable id token for manual state ids."""
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "unknown").lower()).strip("_") or "unknown"
+
+
+def build_manual_snapshot_state(
+    controls: dict[str, Any],
+    race_context: RaceStrategyContext,
+    live_mode: bool,
+) -> RaceState:
+    """Build a single-driver manual race-state snapshot for any configured race."""
+    race_config = race_context.race_config
+    model = race_context.degradation_model
+    available_compounds = [
+        compound
+        for compound in race_config.compounds
+        if model.get_model_info(compound).get("model_type")
+    ]
+    if not available_compounds:
+        raise ValueError("No degradation models are available for the selected race.")
+
+    if live_mode:
+        lap_number = int(controls["manual_current_lap"])
+        laps_remaining = max(race_config.total_laps - lap_number, 0)
+        current_compound = str(controls["manual_compound"])
+        current_tyre_life = int(controls["manual_tyre_life"])
+        driver_code = _plain_text(controls.get("manual_driver_code"), race_config.default_driver_code)
+        team_name = _plain_text(controls.get("manual_team_name"), "Manual snapshot")
+        current_position = _optional_int_from_text(controls.get("manual_position_text"))
+        gap_ahead = _optional_float_from_text(controls.get("manual_gap_ahead_text"))
+        gap_behind = _optional_float_from_text(controls.get("manual_gap_behind_text"))
+        flag_state = str(controls.get("manual_flag_state") or "Green")
+        source = "manual_live_snapshot"
+    else:
+        laps_remaining = int(controls["demo_laps_remaining"])
+        lap_number = max(race_config.total_laps - laps_remaining, 1)
+        current_compound = str(controls["demo_compound"])
+        current_tyre_life = int(controls["demo_tyre_life"])
+        driver_code = race_config.default_driver_code
+        team_name = "Reference scenario"
+        current_position = None
+        gap_ahead = None
+        gap_behind = None
+        flag_state = "Green"
+        source = "manual_demo_scenario"
+
+    if laps_remaining < 2:
+        raise ValueError("Manual recommendation needs at least two laps remaining.")
+
+    best_plan, _ = recommend_best_strategy(
+        degradation_models=model,
+        pit_loss_value=race_context.pit_loss.value_s,
+        current_compound=current_compound,
+        current_tyre_life=current_tyre_life,
+        laps_remaining=laps_remaining,
+        candidate_compounds=available_compounds,
+        include_two_stop=True,
+    )
+    stability = assess_strategy_stability(
+        baseline_plan=best_plan,
+        pit_loss_value=race_context.pit_loss.value_s,
+        degradation_models=model,
+        current_compound=current_compound,
+        current_tyre_life=current_tyre_life,
+        laps_remaining=laps_remaining,
+    )
+    timing_trace = build_strategy_timing_trace(
+        degradation_models=model,
+        pit_loss_value=race_context.pit_loss.value_s,
+        current_compound=current_compound,
+        current_tyre_life=current_tyre_life,
+        laps_remaining=laps_remaining,
+        next_compound=best_plan.next_compound,
+        final_compound=best_plan.final_compound,
+    )
+
+    future_compounds = [
+        compound
+        for compound in [best_plan.next_compound, best_plan.final_compound]
+        if compound
+    ]
+    support_lookup = {
+        compound: model.get_support_info(compound)
+        for compound in race_config.compounds
+    }
+    risk_notes = list(stability.flip_conditions)
+    risk_notes.extend(race_context.caveats)
+    if flag_state != "Green":
+        risk_notes.append(
+            f"Manual flag state is {flag_state}; SC/VSC/yellow logic is not modeled."
+        )
+    if gap_ahead is not None or gap_behind is not None or current_position is not None:
+        risk_notes.append(
+            "Position and gap fields are displayed only; this sprint does not add competitor-aware optimization."
+        )
+
+    recommendation = build_recommendation_state(
+        plan_payload=asdict(best_plan),
+        source=source,
+        lap_number=lap_number,
+        support_lookup=support_lookup,
+        confidence_label=confidence_label_for_context(
+            stability.stability_label,
+            race_context,
+            future_compounds,
+        ),
+        confidence_reason=(
+            "Phase 2C sensitivity classification plus race-specific support gating."
+        ),
+        extra_risk_notes=risk_notes,
+        timing_trace=timing_trace,
+    )
+
+    stint_start_lap = max(1, lap_number - current_tyre_life + 1)
+    state = RaceState(
+        state_id=(
+            f"{source}:{race_config.key}:lap_{lap_number}:"
+            f"{_safe_state_token(driver_code)}:{_safe_state_token(current_compound)}"
+        ),
+        source_type=source,
+        source_reference="app/streamlit_app.py manual controls",
+        race_id=f"{race_config.season}:{race_config.circuit_id}:manual",
+        season=race_config.season,
+        event_name=race_config.event_name,
+        session_name="Race",
+        circuit_name=race_config.circuit_name,
+        circuit_id=race_config.circuit_id,
+        lap_number=lap_number,
+        laps_remaining=laps_remaining,
+        total_laps=race_config.total_laps,
+        selected_driver=DriverState(
+            driver_code=driver_code,
+            display_name=driver_code,
+            team_name=team_name,
+            current_compound=current_compound,
+            tyre_age_laps=current_tyre_life,
+            current_position=current_position,
+            current_stint_number=1,
+            stint_history=[
+                StintSummary(
+                    stint_number=1,
+                    compound=current_compound,
+                    start_lap=stint_start_lap,
+                    end_lap=lap_number,
+                    laps_completed=current_tyre_life,
+                    closing_position=current_position,
+                )
+            ],
+        ),
+        competitor_context=CompetitorGapContext(
+            gap_ahead_seconds=gap_ahead,
+            gap_behind_seconds=gap_behind,
+            context_note=(
+                "Manual snapshot context. Gaps and position are shown for operator awareness only."
+                if live_mode
+                else "Manual demo state: no nearby competitor ordering is attached."
+            ),
+        ),
+        recommendation=recommendation,
+        event_status=EventStatus(
+            track_status=_track_status_from_flag(flag_state),
+            safety_car_active=flag_state == "Safety Car",
+            virtual_safety_car_active=flag_state == "VSC",
+        ),
+        notes=[
+            f"{race_config.label} manual strategy snapshot.",
+            "Recommendation uses the existing deterministic single-car strategy engine.",
+            "Manual flags, gaps, and position are not optimizer inputs in this sprint.",
+        ],
+    )
+    state.validate()
+    return state
+
+
 def build_dashboard_snapshot(
     controls: dict[str, Any],
+    race_context: RaceStrategyContext,
 ) -> tuple[list[RaceState], dict[str, Any]]:
     """Build the currently selected dashboard snapshot."""
     source_mode = controls["source_mode"]
@@ -1299,38 +1612,43 @@ def build_dashboard_snapshot(
             "reference_path": "data/processed/phase2d_validation_summary.json",
         }
 
-    state = build_demo_race_state(
-        ROOT,
-        current_compound=controls["demo_compound"],
-        current_tyre_life=int(controls["demo_tyre_life"]),
-        laps_remaining=int(controls["demo_laps_remaining"]),
+    state = build_manual_snapshot_state(
+        controls,
+        race_context=race_context,
+        live_mode=source_mode == "Manual live snapshot",
     )
+    label = "Manual Live Snapshot" if source_mode == "Manual live snapshot" else "Manual Demo Scenario"
     return [state], {
         "snapshot_key": state.state_id,
-        "source_label": "Manual Demo Scenario",
-        "source_mode": "demo_scenario",
-        "headline": "Manual replay-shell demo scenario",
-        "subheadline": "Synthetic race-state checkpoint driven by the current demo inputs.",
+        "source_label": label,
+        "source_mode": source_mode.lower().replace(" ", "_"),
+        "headline": f"{race_context.race_config.label}: lap {state.lap_number} manual snapshot",
+        "subheadline": "Synthetic race-state checkpoint driven by manual inputs.",
         "mode_note": (
-            "This is the Phase 2/3 demo scenario shown inside the new dashboard shell. It is not a live feed and it is not a real historical field snapshot."
+            "Manual mode is race-weekend decision support. It is not a live feed, and flags/gaps are surfaced as context rather than modeled race dynamics."
         ),
         "field_scope_note": (
-            "Timing panel, nearby-car context, driver identity, and track position are intentionally minimal here because the source contains a single synthetic driver state."
+            "Timing panel, nearby-car context, driver identity, and track position are manually supplied or placeholders. The recommendation remains deterministic and single-car."
         ),
         "default_driver_code": _driver_key(state),
         "is_full_field": False,
-        "reference_path": "app/demo_strategy.py",
+        "reference_path": "app/streamlit_app.py manual controls",
     }
 
 
-def render_shell_banner(snapshot_meta: dict[str, Any], pit_sample_count: int) -> None:
+def render_shell_banner(
+    snapshot_meta: dict[str, Any],
+    race_context: RaceStrategyContext,
+) -> None:
     """Render the main shell banner."""
+    pit_loss = race_context.pit_loss
+    pit_uncertainty = getattr(pit_loss, "uncertainty", "Unknown")
     st.markdown(
         f"""
         <div class="status-strip" style="justify-content:flex-start; margin:0.12rem 0 0.08rem 0;">
             <span class="status-pill">{_html_escape(snapshot_meta["source_label"])}</span>
             <span class="status-pill">{_html_escape(snapshot_meta["headline"])}</span>
-            <span class="status-pill">Pit baseline: {pit_sample_count} samples</span>
+            <span class="status-pill">Pit baseline: {_html_escape(f"{pit_loss.value_s:.1f}s | {pit_loss.support_tier} | {pit_uncertainty} uncertainty | {pit_loss.sample_count} samples")}</span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1877,13 +2195,7 @@ def render_recommendation_panel(selected_state: RaceState) -> None:
         return
     team_visuals = _team_visuals(selected_state.selected_driver.team_name)
 
-    if recommendation.pit_in_laps is None:
-        headline = f"Recommendation available -> {recommendation.next_compound or 'TBD'}"
-    elif recommendation.pit_in_laps <= 1:
-        headline = f"Pit now -> {recommendation.next_compound or 'TBD'}"
-    else:
-        headline = f"Pit in {recommendation.pit_in_laps} laps -> {recommendation.next_compound or 'TBD'}"
-
+    headline = _format_call_title(recommendation)
     target = recommendation.next_compound or "TBD"
     total_time = (
         f"{recommendation.estimated_total_race_time_s:.1f}s model time"
@@ -1908,7 +2220,12 @@ def render_recommendation_panel(selected_state: RaceState) -> None:
     if recommendation.near_optimal_pit_window:
         band_start = min(recommendation.near_optimal_pit_window)
         band_end = max(recommendation.near_optimal_pit_window)
-        st.caption(f"Near-optimal window: laps {band_start}-{band_end}.")
+        st.caption(f"Pit window: +{band_start} to +{band_end} laps from this snapshot.")
+    st.caption(
+        f"Confidence: {recommendation.confidence_label or 'Pending'} | "
+        f"Support: {recommendation.support_tier or 'n/a'} | "
+        f"Sensitivity: {recommendation.confidence_reason or 'Phase 2C not available'}"
+    )
 
     risk_notes = recommendation.risk_notes or []
     if risk_notes:
@@ -1945,19 +2262,40 @@ def render_model_status(deg_result: object) -> None:
     columns = st.columns(3)
     for index, compound in enumerate(["SOFT", "MEDIUM", "HARD"]):
         info = deg_result.get_model_info(compound)
+        anchor_label = info.get("anchor_label", "Anchor")
+        race_model_laps = info.get("race_model_laps")
+        source_label = info.get("model_source", "model")
         with columns[index]:
             with st.container(border=True):
                 st.metric(compound, info.get("support_tier", "n/a"))
                 st.caption(f"{info.get('samples', 0)} total model laps")
-                st.caption(
-                    f"Miami: {info.get('miami_model_type', 'n/a')} | "
-                    f"2026: {info.get('recency_model_type', 'n/a')}"
-                )
+                if race_model_laps is not None:
+                    st.caption(f"{anchor_label}: {race_model_laps} race-local model laps")
+                st.caption(f"Source: {source_label}")
 
 
 def render_data_context(hybrid_context: dict) -> None:
     """Render data-source and blending context."""
     st.markdown("#### Data Context")
+    race_context = hybrid_context.get("race_context")
+    if race_context:
+        race_config = race_context.get("race_config", {})
+        pit_loss = race_context.get("pit_loss", {})
+        data_summary = race_context.get("data_summary", {})
+        metric_cols = st.columns(3)
+        metric_cols[0].metric("Race", race_config.get("label", "n/a"))
+        metric_cols[1].metric("Local laps", f"{data_summary.get('historical_raw_laps', 0):,}")
+        metric_cols[2].metric("Pit support", pit_loss.get("support_tier", "n/a"))
+        raw_pit_loss = pit_loss.get("raw_value_s")
+        raw_segment = f" | raw median: {raw_pit_loss:.2f}s" if raw_pit_loss is not None else ""
+        st.caption(
+            f"Model source: {data_summary.get('model_source', 'n/a')} | "
+            f"Pit loss: {pit_loss.get('value_s', 0):.2f}s from {pit_loss.get('source', 'n/a')} | "
+            f"uncertainty: {pit_loss.get('uncertainty', 'n/a')}{raw_segment}"
+        )
+        for caveat in race_context.get("caveats", [])[:4]:
+            st.caption(f"- {caveat}")
+
     grouping = hybrid_context.get("data_grouping", [])
     metric_cols = st.columns(3)
     metric_cols[0].metric("Active pools", len(grouping))
@@ -2327,6 +2665,26 @@ def render_assumptions_footer(snapshot_meta: dict[str, Any]) -> None:
         )
 
 
+def render_recommendation_ledger_controls(
+    selected_state: RaceState,
+    snapshot_meta: dict[str, Any],
+    race_context: RaceStrategyContext,
+) -> None:
+    """Render optional local-only recommendation ledger controls."""
+    with st.sidebar:
+        st.divider()
+        st.markdown("### Local ledger")
+        st.caption("Optional JSONL artifact under ignored data/processed paths.")
+        if st.button("Save recommendation locally", width="stretch"):
+            output_path = append_recommendation_ledger_entry(
+                project_root=ROOT,
+                race_context=race_context,
+                race_state=selected_state,
+                snapshot_meta=snapshot_meta,
+            )
+            st.success(f"Saved to {output_path.relative_to(ROOT)}")
+
+
 def render_race_control_fallback(
     states: list[RaceState],
     selected_driver_code: str,
@@ -2405,14 +2763,21 @@ def render_race_control_surface(
 def main() -> None:
     """Main application entry point."""
     render_page_header()
+    race_key = render_race_selector()
 
     try:
         hybrid_context = load_hybrid_context()
-        deg_result, pit_loss_value, pit_sample_count = build_integrated_pipeline()
+        race_context = build_integrated_pipeline(race_key)
+        deg_result = race_context.degradation_model
+        pit_loss_value = race_context.pit_loss.value_s
+        pit_sample_count = race_context.pit_loss.sample_count
         availability_summary = load_phase3a_availability_summary()
     except Exception as exc:
         st.error(f"Failed to initialize the canonical dashboard pipeline: {exc}")
         st.stop()
+
+    hybrid_context = dict(hybrid_context)
+    hybrid_context["race_context"] = race_context.to_summary()
 
     available_compounds = ["SOFT", "MEDIUM", "HARD"]
     available_compounds = [
@@ -2424,15 +2789,15 @@ def main() -> None:
         st.error("No degradation models are available. Check the local data build.")
         st.stop()
 
-    controls = render_sidebar_controls(available_compounds)
+    controls = render_sidebar_controls(available_compounds, race_context)
     try:
-        states, snapshot_meta = build_dashboard_snapshot(controls)
+        states, snapshot_meta = build_dashboard_snapshot(controls, race_context)
     except Exception as exc:
         st.error(f"Failed to build the selected dashboard snapshot: {exc}")
         st.stop()
 
     selected_driver_code = _selection_defaults(states, snapshot_meta)
-    render_shell_banner(snapshot_meta, pit_sample_count)
+    render_shell_banner(snapshot_meta, race_context)
     selected_view = render_view_switch()
 
     if selected_view == "Race Control":
@@ -2444,6 +2809,15 @@ def main() -> None:
             pit_sample_count=pit_sample_count,
             show_placeholder_notes=bool(controls.get("show_placeholder_notes")),
         )
+        selected_state = next(
+            (
+                state
+                for state in states
+                if _driver_key(state) == selected_driver_code
+            ),
+            states[0],
+        )
+        render_recommendation_ledger_controls(selected_state, snapshot_meta, race_context)
         render_assumptions_footer(snapshot_meta)
         return
 
@@ -2477,6 +2851,7 @@ def main() -> None:
         available_compounds=available_compounds,
         hybrid_context=hybrid_context,
     )
+    render_recommendation_ledger_controls(selected_state, snapshot_meta, race_context)
     render_assumptions_footer(snapshot_meta)
 
 
